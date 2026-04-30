@@ -1,0 +1,24 @@
+# See docs at: https://mystmd.org
+version: 1
+project:
+  title: 量潮人力资源云
+  description: QtCloud HR 产品文档
+  keywords: []
+  authors: []
+  toc:
+    - file: index.md
+    - title: BRD（业务需求文档）
+      children:
+        - file: brd/index.md
+        - file: brd/recruitment.md
+        - file: brd/salary.md
+    - title: PRD（产品需求文档）
+      children:
+        - file: prd/recruitment.md
+        - file: prd/salary.md
+    - title: ADD（架构设计文档）
+      children:
+        - file: add/recruitment.md
+        - file: add/salary.md
+site:
+  template: book-theme
