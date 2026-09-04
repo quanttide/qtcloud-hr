@@ -112,6 +112,27 @@ func TestRecruitmentReportEndpointCreatesDryRunReport(t *testing.T) {
 	}
 }
 
+func TestRecruitmentReportDefaultsToDryRunWhenConfigured(t *testing.T) {
+	adapter := &fakeRecruitmentAdapter{}
+	logDir := t.TempDir()
+	recruitmentStore := store.NewRecruitmentStore(nil)
+	h := NewRecruitmentHandler(recruitmentStore, adapter, recruitment.NewFileAuditLogger(logDir), RecruitmentHandlerConfig{DryRunDefault: true})
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp := postJSON(t, ts.URL+"/api/v1/recruitment/reports", `{"days":30}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	if len(adapter.reports) != 1 || !adapter.reports[0].IsDryRun(false) {
+		t.Fatalf("adapter should receive normalized dry_run=true: %+v", adapter.reports)
+	}
+}
+
 func TestRecruitmentCandidateActionsValidateWhitelistAndRequiredParams(t *testing.T) {
 	adapter := &fakeRecruitmentAdapter{}
 	ts, _ := newRecruitmentTestServer(t, adapter)
@@ -187,6 +208,35 @@ func TestRecruitmentCandidateActionsCallAdapterAndAudit(t *testing.T) {
 		if strings.Contains(logText, leak) {
 			t.Fatalf("audit log leaked request params %q: %s", leak, logText)
 		}
+	}
+}
+
+func TestRecruitmentCandidateActionDefaultsToDryRunWhenConfigured(t *testing.T) {
+	adapter := &fakeRecruitmentAdapter{}
+	logDir := t.TempDir()
+	recruitmentStore := store.NewRecruitmentStore([]domain.RecruitmentCandidate{
+		{
+			ID:     "cand_001",
+			Name:   "张三",
+			Email:  "zhangsan@example.com",
+			Stage:  "new",
+			Status: "pending",
+		},
+	})
+	h := NewRecruitmentHandler(recruitmentStore, adapter, recruitment.NewFileAuditLogger(logDir), RecruitmentHandlerConfig{DryRunDefault: true})
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp := postJSON(t, ts.URL+"/api/v1/recruitment/candidates/cand_001/actions", `{"action":"send_exam","params":{}}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	if len(adapter.actions) != 1 || !adapter.actions[0].Request.IsDryRun(false) {
+		t.Fatalf("adapter should receive normalized dry_run=true: %+v", adapter.actions)
 	}
 }
 

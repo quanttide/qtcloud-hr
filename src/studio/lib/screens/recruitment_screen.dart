@@ -110,6 +110,11 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
   final RecruitmentApiClient? _apiClient = _apiBaseUrl.isEmpty
       ? null
       : RecruitmentApiClient(baseUrl: _apiBaseUrl, operator: _operator);
+  final TextEditingController _interviewPositionController =
+      TextEditingController();
+  final TextEditingController _interviewTimeController = TextEditingController(
+    text: _defaultInterviewTime(),
+  );
 
   Future<List<Email>>? _future;
   late List<Email> _emails;
@@ -128,6 +133,13 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     _future = _loadEmails();
   }
 
+  @override
+  void dispose() {
+    _interviewPositionController.dispose();
+    _interviewTimeController.dispose();
+    super.dispose();
+  }
+
   Future<List<Email>> _loadEmails() async {
     if (_apiClient != null) {
       try {
@@ -138,6 +150,7 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
             .map((entry) => Email.fromCandidate(entry.value, entry.key))
             .toList();
         _selectedId = emails.isNotEmpty ? emails.first.id : null;
+        _syncInterviewInputs(emails.isNotEmpty ? emails.first : null);
         return emails;
       } on RecruitmentApiException {
         rethrow;
@@ -150,6 +163,7 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
         .map(Email.fromJson)
         .toList();
     _selectedId = emails.isNotEmpty ? emails.first.id : null;
+    _syncInterviewInputs(emails.isNotEmpty ? emails.first : null);
     return emails;
   }
 
@@ -168,6 +182,20 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
       final e = _emails.where((x) => x.id == id).firstOrNull;
       if (e != null) e.status = status;
     });
+  }
+
+  void _selectEmail(Email email) {
+    setState(() {
+      _selectedId = email.id;
+      _syncInterviewInputs(email);
+    });
+  }
+
+  void _syncInterviewInputs(Email? email) {
+    _interviewPositionController.text = email?.position ?? '';
+    if (_interviewTimeController.text.trim().isEmpty) {
+      _interviewTimeController.text = _defaultInterviewTime();
+    }
   }
 
   Future<void> _createReport() async {
@@ -253,8 +281,12 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
         return const <String, Object?>{};
       case RecruitmentAction.createInterviewNotice:
         return <String, Object?>{
-          'position': email.position.isEmpty ? '待确认岗位' : email.position,
-          'time': _defaultInterviewTime(),
+          'position': _interviewPositionController.text.trim().isEmpty
+              ? '待确认岗位'
+              : _interviewPositionController.text.trim(),
+          'time': _interviewTimeController.text.trim().isEmpty
+              ? _defaultInterviewTime()
+              : _interviewTimeController.text.trim(),
         };
     }
   }
@@ -456,7 +488,7 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     final sel = e.id == _selectedId;
     final dc = _detectColor(e.detected);
     return InkWell(
-      onTap: () => setState(() => _selectedId = e.id),
+      onTap: () => _selectEmail(e),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: BoxDecoration(
@@ -723,6 +755,32 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
           Text(
             '每个按钮调用 provider Action API；dry_run 打开时只预览，不真实发送。',
             style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _interviewPositionController,
+                  decoration: const InputDecoration(
+                    labelText: '面试岗位',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextField(
+                  controller: _interviewTimeController,
+                  decoration: const InputDecoration(
+                    labelText: '面试时间',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 12),
           Wrap(

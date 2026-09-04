@@ -15,6 +15,8 @@ void main() {
     expect(find.text('发送实训邀约'), findsOneWidget);
     expect(find.text('发送笔试'), findsOneWidget);
     expect(find.text('生成面试通知'), findsOneWidget);
+    expect(find.widgetWithText(TextField, '面试岗位'), findsOneWidget);
+    expect(find.widgetWithText(TextField, '面试时间'), findsOneWidget);
     expect(find.textContaining('后端动作：send_survey'), findsOneWidget);
     expect(find.textContaining('后端动作：create_interview_notice'), findsOneWidget);
   });

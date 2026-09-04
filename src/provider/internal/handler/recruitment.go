@@ -82,6 +82,7 @@ func (h *RecruitmentHandler) CreateReport(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	req = h.normalizeReportRequest(req)
 
 	result, err := h.adapter.CreateReport(r.Context(), req)
 	now := time.Now().UTC()
@@ -152,6 +153,7 @@ func (h *RecruitmentHandler) RunCandidateAction(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	req = h.normalizeActionRequest(req)
 
 	adapterResult, err := h.adapter.RunAction(r.Context(), candidate, req)
 	now := time.Now().UTC()
@@ -207,6 +209,22 @@ func validateReportRequest(req domain.RecruitmentReportRequest) error {
 		return errors.New("start must be before or equal to end")
 	}
 	return nil
+}
+
+func (h *RecruitmentHandler) normalizeReportRequest(req domain.RecruitmentReportRequest) domain.RecruitmentReportRequest {
+	if req.DryRun == nil {
+		dryRun := h.dryRunDefault
+		req.DryRun = &dryRun
+	}
+	return req
+}
+
+func (h *RecruitmentHandler) normalizeActionRequest(req domain.RecruitmentActionRequest) domain.RecruitmentActionRequest {
+	if req.DryRun == nil {
+		dryRun := h.dryRunDefault
+		req.DryRun = &dryRun
+	}
+	return req
 }
 
 func validateActionRequest(req domain.RecruitmentActionRequest) error {
