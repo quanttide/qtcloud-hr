@@ -74,6 +74,7 @@ func postJSON(t *testing.T, url string, body string) *http.Response {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Operator", "tester")
+	req.Header.Set("X-Recruitment-Permission", "write")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -204,6 +205,35 @@ func TestRecruitmentEndpointRequiresOperator(t *testing.T) {
 	}
 }
 
+func TestRecruitmentSendActionRequiresWritePermission(t *testing.T) {
+	adapter := &fakeRecruitmentAdapter{}
+	ts, _ := newRecruitmentTestServer(t, adapter)
+	defer ts.Close()
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		ts.URL+"/api/v1/recruitment/candidates/cand_001/actions",
+		strings.NewReader(`{"action":"send_exam","dry_run":true,"params":{}}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Operator", "tester")
+	req.Header.Set("X-Recruitment-Permission", "read")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
+	}
+	if len(adapter.actions) != 0 {
+		t.Fatalf("adapter should not be called without write permission")
+	}
+}
+
 func TestRecruitmentAdapterErrorsAreSanitized(t *testing.T) {
 	adapter := &fakeRecruitmentAdapter{err: errors.New("qtrecurit access survey failed token=secret stack trace mail body")}
 	ts, logDir := newRecruitmentTestServer(t, adapter)
@@ -231,4 +261,3 @@ func TestRecruitmentAdapterErrorsAreSanitized(t *testing.T) {
 		}
 	}
 }
-

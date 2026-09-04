@@ -65,8 +65,8 @@ func TestTimesheetValidation(t *testing.T) {
 	defer ts.Close()
 
 	for _, body := range []string{
-		`{"date":"2026-08-12","hours":6}`,        // 缺 userId
-		`{"userId":"u-1","hours":6}`,             // 缺 date
+		`{"date":"2026-08-12","hours":6}`,                 // 缺 userId
+		`{"userId":"u-1","hours":6}`,                      // 缺 date
 		`{"userId":"u-1","date":"2026-08-12","hours":0}`,  // hours 0
 		`{"userId":"u-1","date":"2026-08-12","hours":25}`, // hours > 24
 	} {
