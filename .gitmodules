@@ -1,0 +1,3 @@
+[submodule "third_party/qtrecurit"]
+	path = third_party/qtrecurit
+	url = https://github.com/quanttide/qtrecurit.git

@@ -1,0 +1,12 @@
+.git
+.github
+.quanttide
+**/.dart_tool
+**/.terraform
+**/build
+**/target
+**/*.exe
+**/*.log
+**/.env
+**/.env.*
+!third_party/qtrecurit/src/cli/templates/**
