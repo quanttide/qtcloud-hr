@@ -18,10 +18,10 @@ resource "alicloud_ram_role_policy_attachment" "fc_vpc" {
   role_name   = alicloud_ram_role.fc.role_name
 }
 
-# 函数计算（FC 3.0）：custom-container 容器镜像，内置 vibe-coding 课程数据
+# 函数计算（FC 3.0）：custom-container 容器镜像，内置 qtrecurit CLI
 resource "alicloud_fcv3_function" "this" {
   function_name = local.app_name_prefix
-  description   = "qtcloud-human 人力资源工时 API"
+  description   = "qtcloud-human 人力资源 API"
   runtime       = "custom-container"
   handler       = "index.handler"
   cpu           = 0.5
@@ -34,6 +34,19 @@ resource "alicloud_fcv3_function" "this" {
   custom_container_config {
     image = var.image
     port  = 8080
+  }
+
+  # 对齐 provider 运行时约定：容器监听 8080，招聘 API 默认 dry-run，
+  # qtrecurit 收件箱/简历缓存和动作审计日志写入 FC 可写临时目录。
+  environment_variables = {
+    LISTEN_ADDR                                  = ":8080"
+    QTCLOUD_HUMAN_CACHE_HOME                     = "/tmp/qtcloud-human/cache"
+    QTCLOUD_HUMAN_ACTION_LOG_DIR                 = "/tmp/qtcloud-human/audit"
+    QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS = tostring(var.allow_real_recruitment_actions)
+    QTCLOUD_HUMAN_CORS_ORIGINS                   = var.cors_origins
+    QTRECURIT_BIN                                = "/usr/local/bin/qtrecurit"
+    QTRECURIT_DRY_RUN_DEFAULT                    = tostring(var.qtrecurit_dry_run_default)
+    QTRECURIT_TIMEOUT_SECONDS                    = tostring(var.qtrecurit_timeout_seconds)
   }
 
   tags = {

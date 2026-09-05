@@ -26,8 +26,9 @@ func main() {
 	adapter.ArgsPrefix = recruitment.DefaultArgsPrefix()
 	audit := recruitment.NewFileAuditLogger(os.Getenv("QTCLOUD_HUMAN_ACTION_LOG_DIR"))
 	rh := handler.NewRecruitmentHandler(rs, adapter, audit, handler.RecruitmentHandlerConfig{
-		DryRunDefault:   dryRunDefault(),
-		ResumeCacheRoot: recruitmentResumeCacheRoot(),
+		DryRunDefault:    dryRunDefault(),
+		AllowRealActions: allowRealRecruitmentActions(),
+		ResumeCacheRoot:  recruitmentResumeCacheRoot(),
 	})
 
 	mux := http.NewServeMux()
@@ -58,11 +59,7 @@ func configureRecruitmentCacheHome() error {
 	if override := strings.TrimSpace(os.Getenv("QTCLOUD_HUMAN_CACHE_HOME")); override != "" {
 		return os.Setenv("XDG_CACHE_HOME", override)
 	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	return os.Setenv("XDG_CACHE_HOME", filepath.Join(wd, ".quanttide", "cache"))
+	return os.Setenv("XDG_CACHE_HOME", filepath.Join(os.TempDir(), "qtcloud-human", "cache"))
 }
 
 func recruitmentResumeCacheRoot() string {
@@ -83,6 +80,12 @@ func dryRunDefault() bool {
 		return true
 	}
 	return parsed
+}
+
+func allowRealRecruitmentActions() bool {
+	value := os.Getenv("QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS")
+	parsed, err := strconv.ParseBool(value)
+	return err == nil && parsed
 }
 
 func corsOrigins() []string {

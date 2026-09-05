@@ -1,5 +1,5 @@
 # 发布 studio：推送 studio/* tag（如 studio/v0.1.0-alpha.1，由 qtcloud-devops release publish 创建）时，
-# 构建 Flutter Web 版，上传到 OSS 发布桶（qtcloud-human-studio，IaC 见 manifests/terraform/studio.tf），
+# 构建 Flutter Web 版，上传到既有 OSS 发布桶（qtcloud-human-studio），
 # 并刷新 CDN 缓存。
 #
 # 对齐 qtdata、qtclass 与 qtrecurit 的 deploy-studio.yml 模式：
@@ -10,6 +10,7 @@
 #
 # 所需 GitHub secrets / variables（org / repo 级）：
 #   - ALIYUN_ACCESS_KEY_ID / ALIYUN_ACCESS_KEY_SECRET（secret）：RAM 用户 AccessKey（OSS 上传 + CDN 刷新）
+#   - QTCLOUD_HUMAN_API_BASE_URL（variable）：provider API 公网地址，例如 FC HTTP 触发器或 API 网关域名
 
 name: Deploy Studio
 
@@ -26,6 +27,7 @@ env:
   OSS_BUCKET: qtcloud-human-studio
   OSS_ENDPOINT: oss-cn-hangzhou.aliyuncs.com
   CDN_DOMAIN: human.cloud.quanttide.com
+  PROVIDER_API_BASE_URL: ${{ vars.QTCLOUD_HUMAN_API_BASE_URL }}
 
 jobs:
   build-and-deploy:
@@ -44,9 +46,16 @@ jobs:
         working-directory: src/studio
         run: flutter pub get
 
+      - name: Check Provider API Base URL
+        run: |
+          if [ -z "${PROVIDER_API_BASE_URL}" ]; then
+            echo "QTCLOUD_HUMAN_API_BASE_URL GitHub variable is required for Studio deployment." >&2
+            exit 1
+          fi
+
       - name: Build Web
         working-directory: src/studio
-        run: flutter build web --release
+        run: flutter build web --release --dart-define="QTCLOUD_HUMAN_API_BASE_URL=${PROVIDER_API_BASE_URL}"
 
       - name: Setup ossutil
         uses: manyuanrong/setup-ossutil@v3.0
@@ -75,7 +84,7 @@ jobs:
             ossutil cp build/web/$f oss://${{ env.OSS_BUCKET }}/$f -f --meta "Cache-Control:no-cache"
           done
 
-      # 静态网站托管的错误文档（studio.tf website.error_document 指向）
+      # 静态网站托管的错误文档
       - name: Upload 404.html
         working-directory: src/studio
         run: |

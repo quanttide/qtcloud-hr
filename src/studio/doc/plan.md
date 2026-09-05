@@ -23,8 +23,8 @@
 
 当前限制：
 
-1. 招聘页面仍是 mock 数据驱动。
-2. 正式 `src/provider` 尚未承接招聘 API。
+1. 招聘页面已接入 provider API，但发布构建必须注入 `QTCLOUD_HUMAN_API_BASE_URL`。
+2. `src/provider` 已承接招聘 API，并通过受控 adapter 调用 `qtrecurit` CLI。
 3. `examples/human-api` 中已有员工、部门、岗位、简历导入、面试创建的参考 API，但还不是正式服务入口。
 
 ### qtrecurit
@@ -412,11 +412,12 @@ provider 侧建议：
 | `QTRECURIT_BIN` | `qtrecurit` 可执行文件路径，默认 `qtrecurit` |
 | `QTRECURIT_TIMEOUT_SECONDS` | CLI 调用超时时间 |
 | `QTRECURIT_DRY_RUN_DEFAULT` | 是否默认 dry-run |
+| `QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS` | 是否允许真实读信、发信和简历下载，生产默认 false |
 | `QTCLOUD_HUMAN_ACTION_LOG_DIR` | 动作日志目录 |
 | `QTCLOUD_HUMAN_CORS_ORIGINS` | 本地/部署前端允许跨域来源，逗号分隔 |
 | `LARK_CLI_BIN` | `lark-cli` 可执行文件路径 |
 
-provider 当前使用内存候选人存储作为第一阶段骨架，正式环境需要替换为持久化候选人/邮件数据源。`access invite` 的 `qr` 参数当前只做受控资源引用校验；qtrecurit CLI 仍要求本地附件路径，正式发送前需要增加服务端资源解析器。
+provider 当前使用内存候选人存储作为第一阶段骨架，正式环境需要替换为持久化候选人/邮件数据源。provider 镜像会从 `third_party/qtrecurit` submodule 编译并内置 `qtrecurit` CLI，同时安装 `lark-cli` 和 `curl`；真实收件箱同步、发送和简历下载仍依赖 FC 运行环境中可用的 `lark-cli` 邮箱认证上下文，并且必须显式开启真实动作开关。`access invite` 的 `qr` 参数当前只做受控资源引用校验；qtrecurit CLI 仍要求本地附件路径，正式发送前需要增加服务端资源解析器。
 
 前端侧建议：
 

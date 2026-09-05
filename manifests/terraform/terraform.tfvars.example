@@ -1,6 +1,8 @@
 # 复制为 terraform.tfvars 并填写实际值
-region           = "cn-hangzhou"
-environment      = "prod"
-db_username      = "qtcloud_pay"
-db_password      = "ChangeMe123!"
-image            = "<ACR实例公网地址，控制台可见，勿入库>/quanttide/qtcloud-pay-provider:latest"
+region                         = "cn-hangzhou"
+environment                    = "prod"
+image                          = "<ACR实例公网地址，控制台可见，勿入库>/quanttide/qtcloud-human-provider:latest"
+cors_origins                   = "https://human.cloud.quanttide.com"
+qtrecurit_dry_run_default      = true
+allow_real_recruitment_actions = false
+qtrecurit_timeout_seconds      = 60

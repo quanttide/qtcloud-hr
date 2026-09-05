@@ -45,18 +45,20 @@ type resumeView struct {
 }
 
 type RecruitmentHandlerConfig struct {
-	DryRunDefault   bool
-	ResumeCacheRoot string
+	DryRunDefault    bool
+	AllowRealActions bool
+	ResumeCacheRoot  string
 }
 
 type RecruitmentHandler struct {
-	store           *store.RecruitmentStore
-	adapter         RecruitmentAdapter
-	audit           recruitment.AuditLogger
-	dryRunDefault   bool
-	resumeCacheRoot string
-	resumeViews     map[string]resumeView
-	resumeViewMu    sync.Mutex
+	store            *store.RecruitmentStore
+	adapter          RecruitmentAdapter
+	audit            recruitment.AuditLogger
+	dryRunDefault    bool
+	allowRealActions bool
+	resumeCacheRoot  string
+	resumeViews      map[string]resumeView
+	resumeViewMu     sync.Mutex
 }
 
 func NewRecruitmentHandler(s *store.RecruitmentStore, adapter RecruitmentAdapter, audit recruitment.AuditLogger, config RecruitmentHandlerConfig) *RecruitmentHandler {
@@ -67,12 +69,13 @@ func NewRecruitmentHandler(s *store.RecruitmentStore, adapter RecruitmentAdapter
 		audit = recruitment.SlogAuditLogger{}
 	}
 	return &RecruitmentHandler{
-		store:           s,
-		adapter:         adapter,
-		audit:           audit,
-		dryRunDefault:   config.DryRunDefault,
-		resumeCacheRoot: cleanOptionalAbsPath(config.ResumeCacheRoot),
-		resumeViews:     map[string]resumeView{},
+		store:            s,
+		adapter:          adapter,
+		audit:            audit,
+		dryRunDefault:    config.DryRunDefault,
+		allowRealActions: config.AllowRealActions,
+		resumeCacheRoot:  cleanOptionalAbsPath(config.ResumeCacheRoot),
+		resumeViews:      map[string]resumeView{},
 	}
 }
 
@@ -110,6 +113,10 @@ func (h *RecruitmentHandler) CreateReport(w http.ResponseWriter, r *http.Request
 		return
 	}
 	req = h.normalizeReportRequest(req)
+	if !req.IsDryRun(h.dryRunDefault) && !h.allowRealActions {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "real recruitment actions are disabled"})
+		return
+	}
 
 	result, err := h.adapter.CreateReport(r.Context(), req)
 	now := time.Now().UTC()
@@ -167,6 +174,10 @@ func (h *RecruitmentHandler) SyncInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req = h.normalizeInboxSyncRequest(req)
+	if !req.IsDryRun(h.dryRunDefault) && !h.allowRealActions {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "real recruitment actions are disabled"})
+		return
+	}
 
 	adapterResult, err := h.adapter.SyncInbox(r.Context(), req)
 	now := time.Now().UTC()
@@ -282,6 +293,10 @@ func (h *RecruitmentHandler) RunCandidateAction(w http.ResponseWriter, r *http.R
 		return
 	}
 	req = h.normalizeActionRequest(req)
+	if !req.IsDryRun(h.dryRunDefault) && !h.allowRealActions {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "real recruitment actions are disabled"})
+		return
+	}
 
 	adapterResult, err := h.adapter.RunAction(r.Context(), candidate, req)
 	now := time.Now().UTC()
@@ -321,6 +336,10 @@ func (h *RecruitmentHandler) CreateResumeView(w http.ResponseWriter, r *http.Req
 	operator := operatorFromRequest(r)
 	if operator == "" {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "operator required"})
+		return
+	}
+	if !h.allowRealActions {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "real recruitment actions are disabled"})
 		return
 	}
 	candidate, attachment, ok := h.resumeAttachmentFromRequest(w, r)

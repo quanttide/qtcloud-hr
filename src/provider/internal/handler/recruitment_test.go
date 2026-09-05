@@ -196,6 +196,36 @@ func TestRecruitmentReportDefaultsToDryRunWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestRecruitmentLiveAdapterCallsDisabledByDefault(t *testing.T) {
+	adapter := &fakeRecruitmentAdapter{}
+	ts, _ := newRecruitmentTestServer(t, adapter)
+	defer ts.Close()
+
+	cases := []struct {
+		name string
+		url  string
+		body string
+	}{
+		{name: "report", url: "/api/v1/recruitment/reports", body: `{"days":30,"dry_run":false}`},
+		{name: "sync", url: "/api/v1/recruitment/inbox/sync", body: `{"mailbox":"hr@quanttide.com","folder":"INBOX","page_size":25,"dry_run":false}`},
+		{name: "action", url: "/api/v1/recruitment/candidates/cand_001/actions", body: `{"action":"send_exam","dry_run":false,"params":{}}`},
+		{name: "resume", url: "/api/v1/recruitment/candidates/cand_001/resume/0/view", body: `{}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := postJSON(t, ts.URL+tc.url, tc.body)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("expected 403, got %d", resp.StatusCode)
+			}
+		})
+	}
+	if len(adapter.reports) != 0 || len(adapter.inboxSyncs) != 0 || len(adapter.actions) != 0 || len(adapter.resumes) != 0 {
+		t.Fatalf("adapter should not be called when live actions are disabled: %+v", adapter)
+	}
+}
+
 func TestRecruitmentCandidateActionsValidateWhitelistAndRequiredParams(t *testing.T) {
 	adapter := &fakeRecruitmentAdapter{}
 	ts, _ := newRecruitmentTestServer(t, adapter)
@@ -340,7 +370,7 @@ func TestRecruitmentCandidateStatusUpdatePersistsManualDecision(t *testing.T) {
 
 func TestRecruitmentInboxSyncCallsAdapterUpsertsCandidatesAndAudits(t *testing.T) {
 	adapter := &fakeRecruitmentAdapter{}
-	ts, logDir := newRecruitmentTestServer(t, adapter)
+	ts, logDir := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{AllowRealActions: true})
 	defer ts.Close()
 
 	resp := postJSON(t, ts.URL+"/api/v1/recruitment/inbox/sync", `{"mailbox":"hr@quanttide.com","folder":"INBOX","page_size":25,"dry_run":false}`)
@@ -443,7 +473,7 @@ func TestRecruitmentResumeViewCreatesShortLivedURLAndServesPDF(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapter := &fakeRecruitmentAdapter{resumePath: resumePath}
-	ts, _ := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{ResumeCacheRoot: cacheRoot})
+	ts, _ := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{ResumeCacheRoot: cacheRoot, AllowRealActions: true})
 	defer ts.Close()
 
 	resp := postJSON(t, ts.URL+"/api/v1/recruitment/candidates/cand_001/resume/0/view", `{}`)
@@ -485,7 +515,7 @@ func TestRecruitmentResumeViewRejectsFilesOutsideCacheRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapter := &fakeRecruitmentAdapter{resumePath: outsidePath}
-	ts, _ := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{ResumeCacheRoot: cacheRoot})
+	ts, _ := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{ResumeCacheRoot: cacheRoot, AllowRealActions: true})
 	defer ts.Close()
 
 	resp := postJSON(t, ts.URL+"/api/v1/recruitment/candidates/cand_001/resume/0/view", `{}`)
@@ -589,7 +619,7 @@ func TestRecruitmentSendActionRequiresWritePermission(t *testing.T) {
 
 func TestRecruitmentAdapterErrorsAreSanitized(t *testing.T) {
 	adapter := &fakeRecruitmentAdapter{err: errors.New("qtrecurit access survey failed token=secret stack trace mail body")}
-	ts, logDir := newRecruitmentTestServer(t, adapter)
+	ts, logDir := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{AllowRealActions: true})
 	defer ts.Close()
 
 	resp := postJSON(t, ts.URL+"/api/v1/recruitment/candidates/cand_001/actions", `{"action":"send_survey","dry_run":false,"params":{}}`)

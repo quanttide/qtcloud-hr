@@ -5,11 +5,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-func TestRecruitmentCacheHomeDefaultsInsideProjectWhenUnset(t *testing.T) {
+func TestRecruitmentCacheHomeDefaultsToWritableTempWhenUnset(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", "")
 	t.Setenv("QTCLOUD_HUMAN_CACHE_HOME", "")
 	if err := configureRecruitmentCacheHome(); err != nil {
@@ -17,8 +16,9 @@ func TestRecruitmentCacheHomeDefaultsInsideProjectWhenUnset(t *testing.T) {
 	}
 
 	got := os.Getenv("XDG_CACHE_HOME")
-	if !strings.HasSuffix(filepath.ToSlash(got), "/.quanttide/cache") {
-		t.Fatalf("XDG_CACHE_HOME = %q, want project .quanttide/cache", got)
+	want := filepath.Join(os.TempDir(), "qtcloud-human", "cache")
+	if got != want {
+		t.Fatalf("XDG_CACHE_HOME = %q, want %q", got, want)
 	}
 }
 
@@ -32,6 +32,22 @@ func TestRecruitmentCacheHomePreservesExplicitOverride(t *testing.T) {
 
 	if got := os.Getenv("XDG_CACHE_HOME"); got != override {
 		t.Fatalf("XDG_CACHE_HOME = %q, want override %q", got, override)
+	}
+}
+
+func TestAllowRealRecruitmentActionsDefaultsFalse(t *testing.T) {
+	t.Setenv("QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS", "")
+
+	if allowRealRecruitmentActions() {
+		t.Fatalf("real recruitment actions should be disabled by default")
+	}
+}
+
+func TestAllowRealRecruitmentActionsRequiresExplicitTrue(t *testing.T) {
+	t.Setenv("QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS", "true")
+
+	if !allowRealRecruitmentActions() {
+		t.Fatalf("real recruitment actions should be enabled when explicitly configured")
 	}
 }
 
