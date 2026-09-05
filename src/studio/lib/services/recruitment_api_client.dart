@@ -13,6 +13,40 @@ enum RecruitmentAction {
   final String value;
 }
 
+class RecruitmentResumeAttachment {
+  const RecruitmentResumeAttachment({
+    required this.fileName,
+    this.contentType = '',
+    this.url = '',
+    this.sizeBytes,
+  });
+
+  final String fileName;
+  final String contentType;
+  final String url;
+  final int? sizeBytes;
+
+  factory RecruitmentResumeAttachment.fromJson(Map<String, dynamic> json) {
+    return RecruitmentResumeAttachment(
+      fileName:
+          (json['file_name'] as String?) ??
+          (json['name'] as String?) ??
+          (json['filename'] as String?) ??
+          '简历附件',
+      contentType:
+          (json['content_type'] as String?) ??
+          (json['mime_type'] as String?) ??
+          '',
+      url:
+          (json['url'] as String?) ??
+          (json['download_url'] as String?) ??
+          (json['preview_url'] as String?) ??
+          '',
+      sizeBytes: _parseAttachmentSize(json['size_bytes'] ?? json['size']),
+    );
+  }
+}
+
 class RecruitmentCandidate {
   const RecruitmentCandidate({
     required this.id,
@@ -22,33 +56,94 @@ class RecruitmentCandidate {
     required this.status,
     required this.hasResume,
     required this.hasCoverLetter,
+    this.resumeAttachments = const [],
+    this.subject = '',
+    this.body = '',
     this.position = '',
     this.lastAction = '',
-  });
+    DateTime? receivedAt,
+    this.updatedAt,
+  }) : receivedAt = receivedAt ?? updatedAt;
 
   final String id;
   final String name;
   final String email;
+  final String subject;
+  final String body;
   final String position;
   final String stage;
   final String status;
   final bool hasResume;
   final bool hasCoverLetter;
+  final List<RecruitmentResumeAttachment> resumeAttachments;
   final String lastAction;
+  final DateTime? receivedAt;
+  final DateTime? updatedAt;
 
   factory RecruitmentCandidate.fromJson(Map<String, dynamic> json) {
     return RecruitmentCandidate(
       id: json['id'] as String,
       name: json['name'] as String,
       email: json['email'] as String,
+      subject: (json['subject'] as String?) ?? '',
+      body: (json['body'] as String?) ?? '',
       position: (json['position'] as String?) ?? '',
       stage: json['stage'] as String,
       status: json['status'] as String,
       hasResume: (json['has_resume'] as bool?) ?? false,
       hasCoverLetter: (json['has_cover_letter'] as bool?) ?? false,
+      resumeAttachments: _parseResumeAttachments(json),
       lastAction: (json['last_action'] as String?) ?? '',
+      receivedAt: _parseRecruitmentTime(
+        json['received_at'] ?? json['receivedAt'] ?? json['date'],
+      ),
+      updatedAt: _parseRecruitmentTime(
+        json['updated_at'] ?? json['updatedAt'] ?? json['created_at'],
+      ),
     );
   }
+}
+
+List<RecruitmentResumeAttachment> _parseResumeAttachments(
+  Map<String, dynamic> json,
+) {
+  final raw = json['resume_attachments'] ?? json['attachments'];
+  if (raw is! List) {
+    return const [];
+  }
+  return raw
+      .whereType<Map<String, dynamic>>()
+      .map(RecruitmentResumeAttachment.fromJson)
+      .where((attachment) => attachment.fileName.trim().isNotEmpty)
+      .toList(growable: false);
+}
+
+int? _parseAttachmentSize(Object? value) {
+  if (value is int) {
+    return value;
+  }
+  if (value is num) {
+    return value.toInt();
+  }
+  if (value is String) {
+    return int.tryParse(value);
+  }
+  return null;
+}
+
+DateTime? _parseRecruitmentTime(Object? value) {
+  if (value is int) {
+    return DateTime.fromMillisecondsSinceEpoch(value, isUtc: true);
+  }
+  if (value is! String) {
+    return null;
+  }
+  final text = value.trim();
+  if (text.isEmpty) {
+    return null;
+  }
+  return DateTime.tryParse(text) ??
+      DateTime.tryParse(text.replaceFirst(' ', 'T'));
 }
 
 class RecruitmentReport {
@@ -67,6 +162,62 @@ class RecruitmentReport {
       reportId: json['report_id'] as String,
       status: json['status'] as String,
       markdown: json['markdown'] as String,
+    );
+  }
+}
+
+class RecruitmentResumeView {
+  const RecruitmentResumeView({required this.url, required this.expiresAt});
+
+  final String url;
+  final DateTime? expiresAt;
+
+  factory RecruitmentResumeView.fromJson(
+    Map<String, dynamic> json,
+    Uri baseUri,
+  ) {
+    final rawUrl = json['url'] as String?;
+    if (rawUrl == null || rawUrl.trim().isEmpty) {
+      throw const RecruitmentApiException('招聘服务返回为空');
+    }
+    return RecruitmentResumeView(
+      url: baseUri.resolve(rawUrl).toString(),
+      expiresAt: _parseRecruitmentTime(json['expires_at']),
+    );
+  }
+}
+
+class RecruitmentInboxSyncResult {
+  const RecruitmentInboxSyncResult({
+    required this.syncId,
+    required this.status,
+    required this.mailbox,
+    required this.folder,
+    required this.scanned,
+    required this.imported,
+    required this.candidates,
+  });
+
+  final String syncId;
+  final String status;
+  final String mailbox;
+  final String folder;
+  final int scanned;
+  final int imported;
+  final List<RecruitmentCandidate> candidates;
+
+  factory RecruitmentInboxSyncResult.fromJson(Map<String, dynamic> json) {
+    return RecruitmentInboxSyncResult(
+      syncId: json['sync_id'] as String,
+      status: json['status'] as String,
+      mailbox: json['mailbox'] as String,
+      folder: json['folder'] as String,
+      scanned: json['scanned'] as int,
+      imported: json['imported'] as int,
+      candidates: (json['candidates'] as List<dynamic>)
+          .cast<Map<String, dynamic>>()
+          .map(RecruitmentCandidate.fromJson)
+          .toList(),
     );
   }
 }
@@ -143,6 +294,41 @@ class RecruitmentApiClient {
     );
   }
 
+  Future<RecruitmentInboxSyncResult> syncInbox({
+    required bool dryRun,
+    String mailbox = 'hr@quanttide.com',
+    String folder = 'INBOX',
+    int pageSize = 50,
+  }) async {
+    final response = await _httpClient.post(
+      _uri('/api/v1/recruitment/inbox/sync'),
+      headers: _headers(write: true),
+      body: jsonEncode({
+        'mailbox': mailbox,
+        'folder': folder,
+        'page_size': pageSize,
+        'dry_run': dryRun,
+      }),
+    );
+    return RecruitmentInboxSyncResult.fromJson(
+      _decodeResponse(response) as Map<String, dynamic>,
+    );
+  }
+
+  Future<RecruitmentCandidate> updateCandidateStatus({
+    required String candidateId,
+    required String status,
+  }) async {
+    final response = await _httpClient.patch(
+      _uri('/api/v1/recruitment/candidates/$candidateId'),
+      headers: _headers(write: true),
+      body: jsonEncode({'status': status}),
+    );
+    return RecruitmentCandidate.fromJson(
+      _decodeResponse(response) as Map<String, dynamic>,
+    );
+  }
+
   Future<RecruitmentActionResult> runAction({
     required String candidateId,
     required RecruitmentAction action,
@@ -163,6 +349,27 @@ class RecruitmentApiClient {
     );
   }
 
+  Future<RecruitmentResumeView> createResumeView({
+    required String candidateId,
+    required int attachmentIndex,
+  }) async {
+    final response = await _httpClient.post(
+      _uri(
+        '/api/v1/recruitment/candidates/$candidateId/resume/$attachmentIndex/view',
+      ),
+      headers: _headers(write: false),
+      body: jsonEncode(<String, Object?>{}),
+    );
+    final decoded = _decodeResponse(response);
+    if (decoded is! Map<String, dynamic>) {
+      throw const RecruitmentApiException('招聘服务返回为空');
+    }
+    return RecruitmentResumeView.fromJson(
+      decoded,
+      Uri.parse(baseUrl),
+    );
+  }
+
   Uri _uri(String path) => Uri.parse(baseUrl).resolve(path);
 
   Map<String, String> _headers({required bool write}) {
@@ -177,7 +384,12 @@ class RecruitmentApiClient {
   }
 
   Object _decodeResponse(http.Response response) {
-    final body = response.body.isEmpty ? null : jsonDecode(response.body);
+    final Object? body;
+    try {
+      body = response.body.isEmpty ? null : jsonDecode(response.body);
+    } on FormatException {
+      throw const RecruitmentApiException('招聘服务暂不可用，请稍后重试');
+    }
     if (response.statusCode >= 200 && response.statusCode < 300) {
       if (body == null) {
         throw const RecruitmentApiException('招聘服务返回为空');

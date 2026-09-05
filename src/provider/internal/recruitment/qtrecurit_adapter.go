@@ -3,10 +3,12 @@ package recruitment
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -36,9 +38,67 @@ func (ExecCommandRunner) Run(ctx context.Context, binary string, args []string) 
 }
 
 type CLIAdapter struct {
-	Binary  string
-	Timeout time.Duration
-	Runner  CommandRunner
+	Binary     string
+	ArgsPrefix []string
+	Timeout    time.Duration
+	Runner     CommandRunner
+}
+
+type qtrecuritInboxSyncResult struct {
+	Status     string                    `json:"status"`
+	Mailbox    string                    `json:"mailbox"`
+	Folder     string                    `json:"folder"`
+	Scanned    int                       `json:"scanned"`
+	Imported   int                       `json:"imported"`
+	Candidates []qtrecuritInboxCandidate `json:"candidates"`
+}
+
+type qtrecuritInboxCandidate struct {
+	ID                string                      `json:"id"`
+	Name              string                      `json:"name"`
+	Email             string                      `json:"email"`
+	MessageID         string                      `json:"message_id"`
+	Subject           string                      `json:"subject"`
+	Body              string                      `json:"body"`
+	Position          string                      `json:"position"`
+	Stage             string                      `json:"stage"`
+	Status            string                      `json:"status"`
+	HasResume         bool                        `json:"has_resume"`
+	HasCoverLetter    bool                        `json:"has_cover_letter"`
+	ResumeAttachments []qtrecuritResumeAttachment `json:"resume_attachments"`
+	Attachments       []qtrecuritResumeAttachment `json:"attachments"`
+	Message           qtrecuritInboxMessage       `json:"message"`
+	Raw               qtrecuritInboxMessage       `json:"raw"`
+	SourceMessageID   string                      `json:"source_message_id"`
+	ReceivedAt        string                      `json:"received_at"`
+	UpdatedAt         string                      `json:"updated_at"`
+}
+
+type qtrecuritInboxMessage struct {
+	Attachments []qtrecuritResumeAttachment `json:"attachments"`
+}
+
+type qtrecuritResumeAttachment struct {
+	ID           string `json:"id"`
+	AttachmentID string `json:"attachment_id"`
+	FileName     string `json:"file_name"`
+	Name         string `json:"name"`
+	Filename     string `json:"filename"`
+	ContentType  string `json:"content_type"`
+	MIMEType     string `json:"mime_type"`
+	URL          string `json:"url"`
+	DownloadURL  string `json:"download_url"`
+	PreviewURL   string `json:"preview_url"`
+	SizeBytes    int64  `json:"size_bytes"`
+	Size         int64  `json:"size"`
+}
+
+type qtrecuritResumeResult struct {
+	Status      string `json:"status"`
+	Path        string `json:"path"`
+	FileName    string `json:"file_name"`
+	ContentType string `json:"content_type"`
+	SizeBytes   int64  `json:"size_bytes"`
 }
 
 func NewCLIAdapter(binary string, timeout time.Duration) *CLIAdapter {
@@ -88,6 +148,208 @@ func (a *CLIAdapter) RunAction(ctx context.Context, candidate domain.Recruitment
 	}, nil
 }
 
+func (a *CLIAdapter) FetchResume(ctx context.Context, candidate domain.RecruitmentCandidate, attachment domain.RecruitmentResumeAttachment) (domain.RecruitmentAdapterResumeResult, error) {
+	args := BuildResumeArgs(candidate, attachment)
+	stdout, _, err := a.run(ctx, args)
+	if err != nil {
+		return domain.RecruitmentAdapterResumeResult{}, err
+	}
+	var decoded qtrecuritResumeResult
+	if err := json.Unmarshal([]byte(stdout), &decoded); err != nil {
+		return domain.RecruitmentAdapterResumeResult{}, fmt.Errorf("%w: invalid resume output", ErrAdapterFailed)
+	}
+	if strings.TrimSpace(decoded.Path) == "" || strings.TrimSpace(decoded.FileName) == "" {
+		return domain.RecruitmentAdapterResumeResult{}, fmt.Errorf("%w: invalid resume output", ErrAdapterFailed)
+	}
+	return domain.RecruitmentAdapterResumeResult{
+		Path:        decoded.Path,
+		FileName:    decoded.FileName,
+		ContentType: decoded.ContentType,
+		SizeBytes:   decoded.SizeBytes,
+	}, nil
+}
+
+func (a *CLIAdapter) SyncInbox(ctx context.Context, req domain.RecruitmentInboxSyncRequest) (domain.RecruitmentAdapterInboxSyncResult, error) {
+	if req.IsDryRun(false) {
+		return domain.RecruitmentAdapterInboxSyncResult{
+			Status:     domain.RecruitmentInboxStatusDryRun,
+			Mailbox:    inboxMailbox(req),
+			Folder:     inboxFolder(req),
+			Candidates: []domain.RecruitmentCandidate{},
+		}, nil
+	}
+	args := BuildInboxSyncArgs(req)
+	stdout, _, err := a.run(ctx, args)
+	if err != nil {
+		return domain.RecruitmentAdapterInboxSyncResult{}, err
+	}
+	var decoded qtrecuritInboxSyncResult
+	if err := json.Unmarshal([]byte(stdout), &decoded); err != nil {
+		return domain.RecruitmentAdapterInboxSyncResult{}, fmt.Errorf("%w: invalid inbox sync output", ErrAdapterFailed)
+	}
+	result := domain.RecruitmentAdapterInboxSyncResult{
+		Status:     decoded.Status,
+		Mailbox:    decoded.Mailbox,
+		Folder:     decoded.Folder,
+		Scanned:    decoded.Scanned,
+		Imported:   decoded.Imported,
+		Candidates: make([]domain.RecruitmentCandidate, 0, len(decoded.Candidates)),
+	}
+	for _, candidate := range decoded.Candidates {
+		converted, err := candidate.toDomain()
+		if err != nil {
+			return domain.RecruitmentAdapterInboxSyncResult{}, fmt.Errorf("%w: invalid inbox candidate", ErrAdapterFailed)
+		}
+		result.Candidates = append(result.Candidates, converted)
+	}
+	if result.Status == "" {
+		result.Status = domain.RecruitmentInboxStatusSynced
+	}
+	if result.Mailbox == "" {
+		result.Mailbox = inboxMailbox(req)
+	}
+	if result.Folder == "" {
+		result.Folder = inboxFolder(req)
+	}
+	if result.Candidates == nil {
+		result.Candidates = []domain.RecruitmentCandidate{}
+	}
+	return result, nil
+}
+
+func (c qtrecuritInboxCandidate) toDomain() (domain.RecruitmentCandidate, error) {
+	receivedAt, err := parseQtrecuritTime(c.ReceivedAt)
+	if err != nil {
+		return domain.RecruitmentCandidate{}, err
+	}
+	updatedAt, err := parseQtrecuritTime(c.UpdatedAt)
+	if err != nil {
+		return domain.RecruitmentCandidate{}, err
+	}
+	if receivedAt.IsZero() {
+		receivedAt = updatedAt
+	}
+	name := displayName(c.Name, c.Subject, c.Email)
+	subject := safeDisplayText(c.Subject)
+	body := safeDisplayText(c.Body)
+	resumeAttachments := resumeAttachmentsToDomain(firstAttachmentList(c.ResumeAttachments, c.Attachments, c.Message.Attachments, c.Raw.Attachments))
+	return domain.RecruitmentCandidate{
+		ID:                c.ID,
+		Name:              name,
+		Email:             c.Email,
+		Subject:           subject,
+		Body:              body,
+		Position:          c.Position,
+		Stage:             c.Stage,
+		Status:            c.Status,
+		HasResume:         c.HasResume || len(resumeAttachments) > 0,
+		HasCoverLetter:    c.HasCoverLetter,
+		ResumeAttachments: resumeAttachments,
+		SourceMessageID:   strings.TrimSpace(firstNonEmpty(c.SourceMessageID, c.MessageID)),
+		ReceivedAt:        receivedAt,
+		UpdatedAt:         updatedAt,
+	}, nil
+}
+
+func firstAttachmentList(values ...[]qtrecuritResumeAttachment) []qtrecuritResumeAttachment {
+	for _, value := range values {
+		if len(value) > 0 {
+			return value
+		}
+	}
+	return nil
+}
+
+func resumeAttachmentsToDomain(attachments []qtrecuritResumeAttachment) []domain.RecruitmentResumeAttachment {
+	if len(attachments) == 0 {
+		return nil
+	}
+	result := make([]domain.RecruitmentResumeAttachment, 0, len(attachments))
+	for _, attachment := range attachments {
+		fileName := safeDisplayText(firstNonEmpty(attachment.FileName, attachment.Name, attachment.Filename))
+		if fileName == "" || !isResumeFileName(fileName) {
+			continue
+		}
+		result = append(result, domain.RecruitmentResumeAttachment{
+			FileName:    fileName,
+			ContentType: safeDisplayText(firstNonEmpty(attachment.ContentType, attachment.MIMEType)),
+			URL:         strings.TrimSpace(firstNonEmpty(attachment.URL, attachment.DownloadURL, attachment.PreviewURL)),
+			SizeBytes:   firstPositive(attachment.SizeBytes, attachment.Size),
+			SourceID:    strings.TrimSpace(firstNonEmpty(attachment.AttachmentID, attachment.ID)),
+		})
+	}
+	return result
+}
+
+func isResumeFileName(fileName string) bool {
+	lower := strings.ToLower(strings.TrimSpace(fileName))
+	return strings.HasSuffix(lower, ".pdf") || strings.HasSuffix(lower, ".doc") || strings.HasSuffix(lower, ".docx")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstPositive(values ...int64) int64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func displayName(name string, subject string, email string) string {
+	trimmed := strings.TrimSpace(safeDisplayText(name))
+	if trimmed != "" {
+		return trimmed
+	}
+	if fromSubject := nameFromBracketedSubject(subject); fromSubject != "" {
+		return fromSubject
+	}
+	return email
+}
+
+func safeDisplayText(value string) string {
+	if containsReplacementCharacter(value) {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+func containsReplacementCharacter(value string) bool {
+	return strings.ContainsRune(value, '\uFFFD')
+}
+
+func nameFromBracketedSubject(subject string) string {
+	matches := regexp.MustCompile(`\[([^\]]+)\]`).FindAllStringSubmatch(subject, -1)
+	if len(matches) < 2 || len(matches[1]) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(safeDisplayText(matches[1][1]))
+}
+
+func parseQtrecuritTime(value string) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, nil
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed, nil
+	}
+	if parsed, err := time.Parse("2006-01-02", value); err == nil {
+		return parsed, nil
+	}
+	if parsed, err := time.Parse("2006-01-02 15:04", value); err == nil {
+		return parsed, nil
+	}
+	return time.Time{}, fmt.Errorf("invalid time: %s", value)
+}
+
 func (a *CLIAdapter) run(parent context.Context, args []string) (string, string, error) {
 	timeout := a.Timeout
 	if timeout <= 0 {
@@ -99,7 +361,9 @@ func (a *CLIAdapter) run(parent context.Context, args []string) (string, string,
 	if runner == nil {
 		runner = ExecCommandRunner{}
 	}
-	stdout, stderr, err := runner.Run(ctx, a.Binary, args)
+	commandArgs := append([]string{}, a.ArgsPrefix...)
+	commandArgs = append(commandArgs, args...)
+	stdout, stderr, err := runner.Run(ctx, a.Binary, commandArgs)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return "", "", ErrAdapterTimeout
 	}
@@ -121,6 +385,28 @@ func BuildReportArgs(req domain.RecruitmentReportRequest) []string {
 		args = append(args, "--end", *req.End)
 	}
 	return args
+}
+
+func BuildInboxSyncArgs(req domain.RecruitmentInboxSyncRequest) []string {
+	args := []string{"inbox", "sync", "--mailbox", inboxMailbox(req), "--folder", inboxFolder(req), "--format", "json"}
+	if req.PageSize != nil {
+		args = append(args, "--page-size", strconv.Itoa(*req.PageSize))
+	}
+	if req.IsDryRun(false) {
+		args = append(args, "--dry-run")
+	}
+	return args
+}
+
+func BuildResumeArgs(candidate domain.RecruitmentCandidate, attachment domain.RecruitmentResumeAttachment) []string {
+	return []string{
+		"inbox", "resume",
+		"--mailbox", "hr@quanttide.com",
+		"--message-id", candidate.SourceMessageID,
+		"--attachment-id", attachment.SourceID,
+		"--file-name", attachment.FileName,
+		"--format", "json",
+	}
 }
 
 func BuildActionArgs(candidate domain.RecruitmentCandidate, req domain.RecruitmentActionRequest) []string {
@@ -157,6 +443,20 @@ func BuildActionArgs(candidate domain.RecruitmentCandidate, req domain.Recruitme
 func stringParam(params map[string]any, key string) string {
 	value, _ := params[key].(string)
 	return value
+}
+
+func inboxMailbox(req domain.RecruitmentInboxSyncRequest) string {
+	if strings.TrimSpace(req.Mailbox) == "" {
+		return "hr@quanttide.com"
+	}
+	return req.Mailbox
+}
+
+func inboxFolder(req domain.RecruitmentInboxSyncRequest) string {
+	if strings.TrimSpace(req.Folder) == "" {
+		return "INBOX"
+	}
+	return req.Folder
 }
 
 func actionStatus(action string, dryRun bool, stdout string, stderr string) string {
@@ -203,7 +503,18 @@ func DefaultBinary() string {
 	if binary := os.Getenv("QTRECURIT_BIN"); binary != "" {
 		return binary
 	}
+	if os.Getenv("QTRECURIT_MANIFEST_PATH") != "" {
+		return "cargo"
+	}
 	return "qtrecurit"
+}
+
+func DefaultArgsPrefix() []string {
+	manifest := strings.TrimSpace(os.Getenv("QTRECURIT_MANIFEST_PATH"))
+	if manifest == "" {
+		return nil
+	}
+	return []string{"run", "--quiet", "--manifest-path", manifest, "--"}
 }
 
 func DefaultTimeout() time.Duration {

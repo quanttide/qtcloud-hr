@@ -18,9 +18,12 @@ import (
 )
 
 type fakeRecruitmentAdapter struct {
-	reports []domain.RecruitmentReportRequest
-	actions []domain.RecruitmentAdapterActionCall
-	err     error
+	reports    []domain.RecruitmentReportRequest
+	actions    []domain.RecruitmentAdapterActionCall
+	inboxSyncs []domain.RecruitmentInboxSyncRequest
+	resumes    []domain.RecruitmentResumeAttachment
+	resumePath string
+	err        error
 }
 
 func (f *fakeRecruitmentAdapter) CreateReport(ctx context.Context, req domain.RecruitmentReportRequest) (domain.RecruitmentAdapterReportResult, error) {
@@ -46,21 +49,81 @@ func (f *fakeRecruitmentAdapter) RunAction(ctx context.Context, candidate domain
 	return domain.RecruitmentAdapterActionResult{Status: status, ExternalMessageID: "msg_123"}, nil
 }
 
+func (f *fakeRecruitmentAdapter) SyncInbox(ctx context.Context, req domain.RecruitmentInboxSyncRequest) (domain.RecruitmentAdapterInboxSyncResult, error) {
+	f.inboxSyncs = append(f.inboxSyncs, req)
+	if f.err != nil {
+		return domain.RecruitmentAdapterInboxSyncResult{}, f.err
+	}
+	return domain.RecruitmentAdapterInboxSyncResult{
+		Status:   "synced",
+		Mailbox:  req.Mailbox,
+		Folder:   req.Folder,
+		Scanned:  3,
+		Imported: 1,
+		Candidates: []domain.RecruitmentCandidate{
+			{
+				ID:             "cand_imported",
+				Name:           "李四",
+				Email:          "lisi@example.com",
+				Subject:        "应聘后端开发",
+				Body:           "HR 您好，我想投递后端开发岗位，附件是我的简历。",
+				Position:       "后端开发",
+				Stage:          "new",
+				Status:         "pending",
+				HasResume:      true,
+				HasCoverLetter: true,
+				ResumeAttachments: []domain.RecruitmentResumeAttachment{
+					{
+						FileName:    "李四-后端开发简历.pdf",
+						ContentType: "application/pdf",
+						URL:         "https://files.example.test/resumes/cand_imported.pdf",
+					},
+				},
+			},
+		},
+	}, nil
+}
+
+func (f *fakeRecruitmentAdapter) FetchResume(ctx context.Context, candidate domain.RecruitmentCandidate, attachment domain.RecruitmentResumeAttachment) (domain.RecruitmentAdapterResumeResult, error) {
+	f.resumes = append(f.resumes, attachment)
+	if f.err != nil {
+		return domain.RecruitmentAdapterResumeResult{}, f.err
+	}
+	return domain.RecruitmentAdapterResumeResult{
+		Path:        f.resumePath,
+		FileName:    attachment.FileName,
+		ContentType: attachment.ContentType,
+		SizeBytes:   7,
+	}, nil
+}
+
 func newRecruitmentTestServer(t *testing.T, adapter *fakeRecruitmentAdapter) (*httptest.Server, string) {
+	return newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{})
+}
+
+func newRecruitmentTestServerWithConfig(t *testing.T, adapter *fakeRecruitmentAdapter, config RecruitmentHandlerConfig) (*httptest.Server, string) {
 	t.Helper()
 	logDir := t.TempDir()
 	recruitmentStore := store.NewRecruitmentStore([]domain.RecruitmentCandidate{
 		{
-			ID:        "cand_001",
-			Name:      "张三",
-			Email:     "zhangsan@example.com",
-			Position:  "数据工程师",
-			Stage:     "new",
-			Status:    "pending",
-			HasResume: true,
+			ID:              "cand_001",
+			Name:            "张三",
+			Email:           "zhangsan@example.com",
+			Position:        "数据工程师",
+			Stage:           "new",
+			Status:          "pending",
+			HasResume:       true,
+			SourceMessageID: "message_001",
+			ResumeAttachments: []domain.RecruitmentResumeAttachment{
+				{
+					FileName:    "张三-后端开发简历.pdf",
+					ContentType: "application/pdf",
+					SourceID:    "attachment_001",
+				},
+			},
 		},
 	})
-	h := NewRecruitmentHandler(recruitmentStore, adapter, recruitment.NewFileAuditLogger(logDir), RecruitmentHandlerConfig{})
+	h := NewRecruitmentHandler(recruitmentStore, adapter, recruitment.NewFileAuditLogger(logDir), config)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 	return httptest.NewServer(mux), logDir
@@ -208,6 +271,246 @@ func TestRecruitmentCandidateActionsCallAdapterAndAudit(t *testing.T) {
 		if strings.Contains(logText, leak) {
 			t.Fatalf("audit log leaked request params %q: %s", leak, logText)
 		}
+	}
+}
+
+func TestRecruitmentCandidateStatusUpdatePersistsManualDecision(t *testing.T) {
+	adapter := &fakeRecruitmentAdapter{}
+	ts, logDir := newRecruitmentTestServer(t, adapter)
+	defer ts.Close()
+
+	req, err := http.NewRequest(
+		http.MethodPatch,
+		ts.URL+"/api/v1/recruitment/candidates/cand_001",
+		strings.NewReader(`{"status":"passed"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Operator", "tester")
+	req.Header.Set("X-Recruitment-Permission", "write")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var updated domain.RecruitmentCandidate
+	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode status update response: %v", err)
+	}
+	if updated.Status != "passed" {
+		t.Fatalf("status = %q, want passed", updated.Status)
+	}
+
+	listReq, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/recruitment/candidates", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listReq.Header.Set("X-Operator", "tester")
+	listResp, err := http.DefaultClient.Do(listReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listResp.Body.Close()
+	var candidates []domain.RecruitmentCandidate
+	if err := json.NewDecoder(listResp.Body).Decode(&candidates); err != nil {
+		t.Fatalf("decode candidate list: %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].Status != "passed" {
+		t.Fatalf("manual decision was not persisted in list response: %+v", candidates)
+	}
+	if len(adapter.actions) != 0 {
+		t.Fatalf("manual status update should not call action adapter: %+v", adapter.actions)
+	}
+
+	data, err := os.ReadFile(filepath.Join(logDir, "recruitment-actions.jsonl"))
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	logText := string(data)
+	if !strings.Contains(logText, "update_candidate_status") || strings.Contains(logText, "zhangsan@example.com") {
+		t.Fatalf("audit log should contain status metadata only: %s", logText)
+	}
+}
+
+func TestRecruitmentInboxSyncCallsAdapterUpsertsCandidatesAndAudits(t *testing.T) {
+	adapter := &fakeRecruitmentAdapter{}
+	ts, logDir := newRecruitmentTestServer(t, adapter)
+	defer ts.Close()
+
+	resp := postJSON(t, ts.URL+"/api/v1/recruitment/inbox/sync", `{"mailbox":"hr@quanttide.com","folder":"INBOX","page_size":25,"dry_run":false}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var got domain.RecruitmentInboxSyncResult
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode sync response: %v", err)
+	}
+	if got.SyncID == "" || got.Status != "synced" || got.Imported != 1 || len(got.Candidates) != 1 {
+		t.Fatalf("unexpected sync response: %+v", got)
+	}
+	if len(adapter.inboxSyncs) != 1 || adapter.inboxSyncs[0].PageSize == nil || *adapter.inboxSyncs[0].PageSize != 25 {
+		t.Fatalf("adapter did not receive structured inbox request: %+v", adapter.inboxSyncs)
+	}
+
+	listReq, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/recruitment/candidates", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listReq.Header.Set("X-Operator", "tester")
+	listResp, err := http.DefaultClient.Do(listReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listResp.Body.Close()
+	var candidates []domain.RecruitmentCandidate
+	if err := json.NewDecoder(listResp.Body).Decode(&candidates); err != nil {
+		t.Fatalf("decode candidate list: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected inbox sync to replace current candidate snapshot, got %+v", candidates)
+	}
+	foundImported := false
+	for _, candidate := range candidates {
+		if candidate.ID == "cand_imported" {
+			foundImported = true
+			if candidate.Subject != "应聘后端开发" || !strings.Contains(candidate.Body, "投递后端开发岗位") {
+				t.Fatalf("expected imported candidate to keep email subject/body, got %+v", candidate)
+			}
+			if len(candidate.ResumeAttachments) != 1 || candidate.ResumeAttachments[0].URL == "" {
+				t.Fatalf("expected imported candidate to keep resume attachment metadata, got %+v", candidate.ResumeAttachments)
+			}
+		}
+	}
+	if !foundImported {
+		t.Fatalf("imported candidate missing from list: %+v", candidates)
+	}
+
+	data, err := os.ReadFile(filepath.Join(logDir, "recruitment-actions.jsonl"))
+	if err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	logText := string(data)
+	if !strings.Contains(logText, "sync_inbox") || strings.Contains(logText, "lisi@example.com") {
+		t.Fatalf("audit log should contain sync metadata only: %s", logText)
+	}
+}
+
+func TestRecruitmentInboxSyncValidatesInputs(t *testing.T) {
+	adapter := &fakeRecruitmentAdapter{}
+	ts, _ := newRecruitmentTestServer(t, adapter)
+	defer ts.Close()
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "invalid mailbox", body: `{"mailbox":"not-an-email","folder":"INBOX","page_size":25,"dry_run":true}`},
+		{name: "invalid folder", body: `{"mailbox":"hr@quanttide.com","folder":"INBOX\n--debug","page_size":25,"dry_run":true}`},
+		{name: "page too large", body: `{"mailbox":"hr@quanttide.com","folder":"INBOX","page_size":500,"dry_run":true}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := postJSON(t, ts.URL+"/api/v1/recruitment/inbox/sync", tc.body)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d", resp.StatusCode)
+			}
+		})
+	}
+	if len(adapter.inboxSyncs) != 0 {
+		t.Fatalf("adapter should not be called on invalid input: %+v", adapter.inboxSyncs)
+	}
+}
+
+func TestRecruitmentResumeViewCreatesShortLivedURLAndServesPDF(t *testing.T) {
+	resumeDir := t.TempDir()
+	cacheRoot := filepath.Join(resumeDir, "qtrecurit", "inbox", "resume-files")
+	resumeDir = filepath.Join(cacheRoot, "resume-key")
+	if err := os.MkdirAll(resumeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resumePath := filepath.Join(resumeDir, "resume.pdf")
+	if err := os.WriteFile(resumePath, []byte("pdfdata"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &fakeRecruitmentAdapter{resumePath: resumePath}
+	ts, _ := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{ResumeCacheRoot: cacheRoot})
+	defer ts.Close()
+
+	resp := postJSON(t, ts.URL+"/api/v1/recruitment/candidates/cand_001/resume/0/view", `{}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	var view domain.RecruitmentResumeViewResult
+	if err := json.NewDecoder(resp.Body).Decode(&view); err != nil {
+		t.Fatalf("decode resume view response: %v", err)
+	}
+	if !strings.HasPrefix(view.URL, "/api/v1/recruitment/resume-view/") || view.ExpiresAt.IsZero() {
+		t.Fatalf("unexpected resume view response: %+v", view)
+	}
+	if len(adapter.resumes) != 1 || adapter.resumes[0].SourceID != "attachment_001" {
+		t.Fatalf("adapter should receive selected attachment: %+v", adapter.resumes)
+	}
+
+	fileResp, err := http.Get(ts.URL + view.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fileResp.Body.Close()
+	if fileResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected file response 200, got %d", fileResp.StatusCode)
+	}
+	if contentType := fileResp.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "application/pdf") {
+		t.Fatalf("content-type = %q, want application/pdf", contentType)
+	}
+	if disposition := fileResp.Header.Get("Content-Disposition"); !strings.HasPrefix(disposition, "inline;") {
+		t.Fatalf("content-disposition = %q, want inline", disposition)
+	}
+}
+
+func TestRecruitmentResumeViewRejectsFilesOutsideCacheRoot(t *testing.T) {
+	cacheRoot := filepath.Join(t.TempDir(), "qtrecurit", "inbox", "resume-files")
+	outsidePath := filepath.Join(t.TempDir(), "resume.pdf")
+	if err := os.WriteFile(outsidePath, []byte("pdfdata"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &fakeRecruitmentAdapter{resumePath: outsidePath}
+	ts, _ := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{ResumeCacheRoot: cacheRoot})
+	defer ts.Close()
+
+	resp := postJSON(t, ts.URL+"/api/v1/recruitment/candidates/cand_001/resume/0/view", `{}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", resp.StatusCode)
+	}
+}
+
+func TestRecruitmentResumeViewRequiresOperator(t *testing.T) {
+	adapter := &fakeRecruitmentAdapter{}
+	ts, _ := newRecruitmentTestServer(t, adapter)
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/v1/recruitment/candidates/cand_001/resume/0/view", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	}
+	if len(adapter.resumes) != 0 {
+		t.Fatalf("adapter should not be called without operator")
 	}
 }
 

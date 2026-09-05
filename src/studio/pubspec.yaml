@@ -35,6 +35,7 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   http: ^1.6.0
+  web: ^1.1.1
 
 dev_dependencies:
   flutter_test:
@@ -60,8 +61,6 @@ flutter:
   assets:
     # mock 数据：绩效页演示，后续替换为 API
     - assets/mock/records.json
-    # mock 数据：招聘页演示，后续替换为 API
-    - assets/mock/emails.json
     # mock 数据：薪酬页演示，后续替换为 API
     - assets/mock/compensation.json
     # mock 数据：培训页演示，后续替换为 API

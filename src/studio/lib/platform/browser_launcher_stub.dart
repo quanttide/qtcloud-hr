@@ -1,0 +1,1 @@
+void openBrowserUrl(String url) {}

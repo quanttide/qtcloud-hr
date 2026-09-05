@@ -1,6 +1,7 @@
 package store
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -10,53 +11,106 @@ import (
 type RecruitmentStore struct {
 	mu         sync.RWMutex
 	candidates map[string]*domain.RecruitmentCandidate
+	order      []string
 }
 
 func NewRecruitmentStore(initial []domain.RecruitmentCandidate) *RecruitmentStore {
 	items := make(map[string]*domain.RecruitmentCandidate, len(initial))
+	order := make([]string, 0, len(initial))
 	for _, candidate := range initial {
 		clone := candidate
+		if clone.ID == "" {
+			continue
+		}
 		if clone.UpdatedAt.IsZero() {
 			clone.UpdatedAt = time.Now().UTC()
 		}
+		if clone.ReceivedAt.IsZero() {
+			clone.ReceivedAt = clone.UpdatedAt
+		}
+		if _, exists := items[clone.ID]; !exists {
+			order = append(order, clone.ID)
+		}
 		items[clone.ID] = &clone
 	}
-	return &RecruitmentStore{candidates: items}
+	return &RecruitmentStore{candidates: items, order: order}
 }
 
 func DefaultRecruitmentStore() *RecruitmentStore {
-	return NewRecruitmentStore([]domain.RecruitmentCandidate{
-		{
-			ID:             "cand_001",
-			Name:           "张明",
-			Email:          "zhangming@gmail.com",
-			Position:       "前端开发",
-			Stage:          "new",
-			Status:         "pending",
-			HasResume:      true,
-			HasCoverLetter: false,
-		},
-		{
-			ID:             "cand_002",
-			Name:           "王芳",
-			Email:          "wangfang@qq.com",
-			Position:       "产品经理",
-			Stage:          "new",
-			Status:         "pending",
-			HasResume:      true,
-			HasCoverLetter: true,
-		},
-	})
+	return NewRecruitmentStore(nil)
 }
 
 func (s *RecruitmentStore) ListCandidates() []domain.RecruitmentCandidate {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]domain.RecruitmentCandidate, 0, len(s.candidates))
-	for _, candidate := range s.candidates {
+	seen := make(map[string]bool, len(s.candidates))
+	for _, id := range s.order {
+		candidate, ok := s.candidates[id]
+		if !ok {
+			continue
+		}
+		out = append(out, *candidate)
+		seen[id] = true
+	}
+	for id, candidate := range s.candidates {
+		if seen[id] {
+			continue
+		}
 		out = append(out, *candidate)
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		iReceivedAt := candidateReceivedAt(out[i])
+		jReceivedAt := candidateReceivedAt(out[j])
+		return iReceivedAt.After(jReceivedAt)
+	})
 	return out
+}
+
+func (s *RecruitmentStore) UpsertCandidates(candidates []domain.RecruitmentCandidate) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, candidate := range candidates {
+		if candidate.ID == "" {
+			continue
+		}
+		clone := candidate
+		if clone.UpdatedAt.IsZero() {
+			clone.UpdatedAt = time.Now().UTC()
+		}
+		if clone.ReceivedAt.IsZero() {
+			clone.ReceivedAt = clone.UpdatedAt
+		}
+		if _, exists := s.candidates[clone.ID]; !exists {
+			s.order = append(s.order, clone.ID)
+		}
+		s.candidates[clone.ID] = &clone
+	}
+}
+
+func (s *RecruitmentStore) ReplaceCandidates(candidates []domain.RecruitmentCandidate) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := make(map[string]*domain.RecruitmentCandidate, len(candidates))
+	order := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.ID == "" {
+			continue
+		}
+		clone := candidate
+		if clone.UpdatedAt.IsZero() {
+			clone.UpdatedAt = time.Now().UTC()
+		}
+		if clone.ReceivedAt.IsZero() {
+			clone.ReceivedAt = clone.UpdatedAt
+		}
+		if _, exists := next[clone.ID]; !exists {
+			order = append(order, clone.ID)
+		}
+		next[clone.ID] = &clone
+	}
+	s.candidates = next
+	s.order = order
 }
 
 func (s *RecruitmentStore) GetCandidate(id string) (domain.RecruitmentCandidate, bool) {
@@ -66,6 +120,21 @@ func (s *RecruitmentStore) GetCandidate(id string) (domain.RecruitmentCandidate,
 	if !ok {
 		return domain.RecruitmentCandidate{}, false
 	}
+	return *candidate, true
+}
+
+func (s *RecruitmentStore) UpdateCandidateStatus(candidateID string, status string) (domain.RecruitmentCandidate, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	candidate, ok := s.candidates[candidateID]
+	if !ok {
+		return domain.RecruitmentCandidate{}, false
+	}
+	candidate.Status = status
+	if candidate.ReceivedAt.IsZero() {
+		candidate.ReceivedAt = candidate.UpdatedAt
+	}
+	candidate.UpdatedAt = time.Now().UTC()
 	return *candidate, true
 }
 
@@ -80,5 +149,15 @@ func (s *RecruitmentStore) RecordAction(candidateID string, action string, stage
 	if stage != "" {
 		candidate.Stage = stage
 	}
+	if candidate.ReceivedAt.IsZero() {
+		candidate.ReceivedAt = candidate.UpdatedAt
+	}
 	candidate.UpdatedAt = time.Now().UTC()
+}
+
+func candidateReceivedAt(candidate domain.RecruitmentCandidate) time.Time {
+	if !candidate.ReceivedAt.IsZero() {
+		return candidate.ReceivedAt
+	}
+	return candidate.UpdatedAt
 }

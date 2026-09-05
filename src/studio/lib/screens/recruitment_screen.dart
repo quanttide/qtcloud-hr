@@ -1,8 +1,10 @@
-import 'dart:convert';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../platform/browser_launcher.dart';
+import '../platform/resume_preview_frame.dart';
 import '../services/recruitment_api_client.dart';
 
 const _apiBaseUrl = String.fromEnvironment('QTCLOUD_HUMAN_API_BASE_URL');
@@ -11,12 +13,12 @@ const _operator = String.fromEnvironment(
   defaultValue: 'studio-user',
 );
 
-/// 招聘筛选模块：投递邮件初筛，后端可用时调用 provider API。
-///
-/// 无 API 配置时保留 assets/mock/emails.json 作为开发 fallback。
+/// 招聘筛选模块：投递邮件初筛，通过 provider API 调用 qtrecurit 能力。
 enum DetectResult { only, has_ }
 
 enum EmailStatus { pending, passed, rejected }
+
+enum InboxFilter { all, unprocessed, hasBody, processed }
 
 class Email {
   final int id;
@@ -28,10 +30,12 @@ class Email {
   final bool hasCover;
   final bool hasBody;
   final bool hasResume;
+  final List<RecruitmentResumeAttachment> resumeAttachments;
   final String extra;
   final String position;
   final String stage;
   final String lastAction;
+  final DateTime? receivedAt;
   final List<String> tags;
   late final DetectResult detected;
   EmailStatus status;
@@ -46,70 +50,76 @@ class Email {
     required this.hasCover,
     required this.hasBody,
     required this.hasResume,
+    required this.resumeAttachments,
     required this.extra,
     required this.position,
     required this.stage,
     required this.lastAction,
+    required this.receivedAt,
     required this.tags,
     this.status = EmailStatus.pending,
   }) {
     detected = (hasCover || (hasBody && body.length > 20))
         ? DetectResult.has_
         : DetectResult.only;
-    if (detected == DetectResult.only) status = EmailStatus.rejected;
+    if (detected == DetectResult.only && status == EmailStatus.pending) {
+      status = EmailStatus.rejected;
+    }
   }
-
-  factory Email.fromJson(Map<String, dynamic> json) => Email(
-    id: json['id'] as int,
-    candidateId: 'cand_${json['id']}',
-    from: json['from'] as String,
-    name: json['name'] as String,
-    subject: json['subject'] as String,
-    body: (json['body'] as String?) ?? '',
-    hasCover: (json['hasCover'] as bool?) ?? false,
-    hasBody: (json['hasBody'] as bool?) ?? false,
-    hasResume: (json['hasResume'] as bool?) ?? false,
-    extra: (json['extra'] as String?) ?? '',
-    position: _positionFromSubject((json['subject'] as String?) ?? ''),
-    stage: 'mock',
-    lastAction: '',
-    tags: (json['tags'] as List<dynamic>? ?? []).cast<String>(),
-  );
 
   factory Email.fromCandidate(RecruitmentCandidate candidate, int index) {
     return Email(
       id: index + 1,
       candidateId: candidate.id,
       from: candidate.email,
-      name: candidate.name,
-      subject: candidate.position.isEmpty ? '候选人投递' : candidate.position,
-      body: '来自 provider API 的候选人记录。当前阶段：${candidate.stage}',
+      name: _displayName(candidate),
+      subject: candidate.subject.isEmpty ? '候选人投递' : candidate.subject,
+      body: candidate.body,
       hasCover: candidate.hasCoverLetter,
-      hasBody: candidate.hasCoverLetter,
-      hasResume: candidate.hasResume,
+      hasBody: candidate.body.trim().isNotEmpty,
+      hasResume: candidate.hasResume || candidate.resumeAttachments.isNotEmpty,
+      resumeAttachments: candidate.resumeAttachments,
       extra: candidate.lastAction.isEmpty ? '' : '最近动作：${candidate.lastAction}',
       position: candidate.position,
       stage: candidate.stage,
       lastAction: candidate.lastAction,
+      receivedAt: candidate.receivedAt,
       tags: [
         candidate.stage,
         if (candidate.lastAction.isNotEmpty) candidate.lastAction,
       ],
+      status: _emailStatusFromCandidate(candidate.status),
     );
   }
 }
 
+class _ResumePreview {
+  const _ResumePreview({
+    required this.key,
+    required this.fileName,
+    required this.contentType,
+    required this.url,
+    required this.expiresAt,
+  });
+
+  final String key;
+  final String fileName;
+  final String contentType;
+  final String url;
+  final DateTime? expiresAt;
+}
+
 class RecruitmentPage extends StatefulWidget {
-  const RecruitmentPage({super.key});
+  const RecruitmentPage({super.key, this.apiClient});
+
+  final RecruitmentApiClient? apiClient;
 
   @override
   State<RecruitmentPage> createState() => _RecruitmentPageState();
 }
 
 class _RecruitmentPageState extends State<RecruitmentPage> {
-  final RecruitmentApiClient? _apiClient = _apiBaseUrl.isEmpty
-      ? null
-      : RecruitmentApiClient(baseUrl: _apiBaseUrl, operator: _operator);
+  late final RecruitmentApiClient? _apiClient;
   final TextEditingController _interviewPositionController =
       TextEditingController();
   final TextEditingController _interviewTimeController = TextEditingController(
@@ -119,17 +129,29 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
   Future<List<Email>>? _future;
   late List<Email> _emails;
   int? _selectedId;
+  bool _emailsInitialized = false;
+  InboxFilter _filter = InboxFilter.all;
   bool _dryRun = true;
   bool _reportLoading = false;
+  bool _inboxSyncLoading = false;
+  int? _markingEmailId;
   String? _reportMarkdown;
   String? _reportStatus;
   String? _lastActionMessage;
   String? _lastActionError;
+  String? _openingAttachmentKey;
+  String? _autoOpenedAttachmentKey;
+  _ResumePreview? _resumePreview;
   RecruitmentAction? _runningAction;
 
   @override
   void initState() {
     super.initState();
+    _apiClient =
+        widget.apiClient ??
+        (_apiBaseUrl.isEmpty
+            ? null
+            : RecruitmentApiClient(baseUrl: _apiBaseUrl, operator: _operator));
     _future = _loadEmails();
   }
 
@@ -141,35 +163,82 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
   }
 
   Future<List<Email>> _loadEmails() async {
-    if (_apiClient != null) {
-      try {
-        final candidates = await _apiClient.listCandidates();
-        final emails = candidates
-            .asMap()
-            .entries
-            .map((entry) => Email.fromCandidate(entry.value, entry.key))
-            .toList();
-        _selectedId = emails.isNotEmpty ? emails.first.id : null;
-        _syncInterviewInputs(emails.isNotEmpty ? emails.first : null);
-        return emails;
-      } on RecruitmentApiException {
-        rethrow;
-      }
+    if (_apiClient == null) {
+      throw const RecruitmentApiException(
+        '未配置 provider API，无法拉取真实招聘邮件。请设置 QTCLOUD_HUMAN_API_BASE_URL。',
+      );
     }
-    final raw = await rootBundle.loadString('assets/mock/emails.json');
-    final list = jsonDecode(raw) as List<dynamic>;
-    final emails = list
-        .cast<Map<String, dynamic>>()
-        .map(Email.fromJson)
-        .toList();
+    final candidates = await _apiClient.listCandidates();
+    final emails = _emailsFromCandidates(candidates);
     _selectedId = emails.isNotEmpty ? emails.first.id : null;
     _syncInterviewInputs(emails.isNotEmpty ? emails.first : null);
     return emails;
   }
 
+  void _setEmailsFromCandidates(List<RecruitmentCandidate> candidates) {
+    final emails = _emailsFromCandidates(candidates);
+    _emails = emails;
+    _emailsInitialized = true;
+    _selectFirstVisibleEmail();
+    _scheduleAutoOpenSelectedResume();
+  }
+
+  List<Email> _emailsFromCandidates(List<RecruitmentCandidate> candidates) {
+    final sortedCandidates = candidates.asMap().entries.toList()
+      ..sort((a, b) {
+        final timeComparison = _compareCandidatesByLatestReceived(
+          a.value,
+          b.value,
+        );
+        if (timeComparison != 0) {
+          return timeComparison;
+        }
+        return a.key.compareTo(b.key);
+      });
+    return sortedCandidates
+        .asMap()
+        .entries
+        .map((entry) => Email.fromCandidate(entry.value.value, entry.key))
+        .toList();
+  }
+
+  int _compareCandidatesByLatestReceived(
+    RecruitmentCandidate a,
+    RecruitmentCandidate b,
+  ) {
+    final aTime = a.receivedAt;
+    final bTime = b.receivedAt;
+    if (aTime == null && bTime == null) {
+      return 0;
+    }
+    if (aTime == null) {
+      return 1;
+    }
+    if (bTime == null) {
+      return -1;
+    }
+    if (aTime.isAtSameMomentAs(bTime)) {
+      return 0;
+    }
+    return bTime.compareTo(aTime);
+  }
+
+  List<Email> get _visibleEmails {
+    switch (_filter) {
+      case InboxFilter.all:
+        return _emails;
+      case InboxFilter.unprocessed:
+        return _emails.where((e) => e.status == EmailStatus.pending).toList();
+      case InboxFilter.hasBody:
+        return _emails.where((e) => e.detected == DetectResult.has_).toList();
+      case InboxFilter.processed:
+        return _emails.where((e) => e.status != EmailStatus.pending).toList();
+    }
+  }
+
   int get _total => _emails.length;
-  int get _onlyCount =>
-      _emails.where((e) => e.detected == DetectResult.only).length;
+  int get _unprocessedCount =>
+      _emails.where((e) => e.status == EmailStatus.pending).length;
   int get _hasCount =>
       _emails.where((e) => e.detected == DetectResult.has_).length;
   int get _processed =>
@@ -177,17 +246,99 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
 
   Email? get _selected => _emails.where((e) => e.id == _selectedId).firstOrNull;
 
-  void _mark(int id, EmailStatus status) {
+  void _setFilter(InboxFilter filter) {
     setState(() {
-      final e = _emails.where((x) => x.id == id).firstOrNull;
-      if (e != null) e.status = status;
+      _filter = filter;
+      _selectFirstVisibleEmail();
     });
+  }
+
+  void _selectFirstVisibleEmail() {
+    final visibleEmails = _visibleEmails;
+    final selectedIsVisible = visibleEmails.any((e) => e.id == _selectedId);
+    if (!selectedIsVisible) {
+      _selectedId = visibleEmails.isNotEmpty ? visibleEmails.first.id : null;
+      _resumePreview = null;
+      _autoOpenedAttachmentKey = null;
+    }
+    _syncInterviewInputs(_selected);
+  }
+
+  Future<void> _mark(Email email, EmailStatus status) async {
+    if (_apiClient == null) {
+      setState(() {
+        _lastActionError = '未配置 provider API，无法保存人工审核结果。';
+      });
+      return;
+    }
+    setState(() {
+      _markingEmailId = email.id;
+      _lastActionError = null;
+      _lastActionMessage = null;
+    });
+    try {
+      final updated = await _apiClient.updateCandidateStatus(
+        candidateId: email.candidateId,
+        status: status.name,
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        final target = _emails
+            .where((x) => x.candidateId == email.candidateId)
+            .firstOrNull;
+        if (target != null) {
+          target.status = _emailStatusFromCandidate(updated.status);
+        }
+        _lastActionMessage = '人工审核结果已保存：${_statusLabel(status)}';
+        _selectFirstVisibleEmail();
+      });
+    } on RecruitmentApiException catch (error) {
+      if (mounted) {
+        setState(() => _lastActionError = error.message);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _markingEmailId = null);
+      }
+    }
   }
 
   void _selectEmail(Email email) {
     setState(() {
       _selectedId = email.id;
+      _resumePreview = null;
+      _autoOpenedAttachmentKey = null;
       _syncInterviewInputs(email);
+    });
+    _scheduleAutoOpenSelectedResume();
+  }
+
+  void _scheduleAutoOpenSelectedResume() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      final email = _selected;
+      if (email == null || email.resumeAttachments.isEmpty) {
+        return;
+      }
+      final key = _attachmentKey(email, 0);
+      if (_resumePreview?.key == key ||
+          _openingAttachmentKey == key ||
+          _autoOpenedAttachmentKey == key) {
+        return;
+      }
+      _autoOpenedAttachmentKey = key;
+      unawaited(
+        _loadResumeAttachment(
+          email,
+          0,
+          email.resumeAttachments.first,
+          openExternal: false,
+        ),
+      );
     });
   }
 
@@ -199,19 +350,19 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
   }
 
   Future<void> _createReport() async {
+    if (_apiClient == null) {
+      setState(() {
+        _lastActionError = '未配置 provider API，无法生成真实招聘报告。';
+      });
+      return;
+    }
     setState(() {
       _reportLoading = true;
       _lastActionError = null;
       _lastActionMessage = null;
     });
     try {
-      final report = _apiClient == null
-          ? RecruitmentReport(
-              reportId: 'mock_report',
-              status: _dryRun ? 'dry_run' : 'created',
-              markdown: _mockReportMarkdown(),
-            )
-          : await _apiClient.createReport(days: 30, dryRun: _dryRun);
+      final report = await _apiClient.createReport(days: 30, dryRun: _dryRun);
       setState(() {
         _reportMarkdown = report.markdown;
         _reportStatus = report.status;
@@ -228,10 +379,51 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     }
   }
 
+  Future<void> _syncInbox() async {
+    if (_apiClient == null) {
+      setState(() {
+        _lastActionError = '未配置 provider API，无法拉取真实招聘邮件。';
+      });
+      return;
+    }
+    setState(() {
+      _inboxSyncLoading = true;
+      _lastActionError = null;
+      _lastActionMessage = null;
+    });
+    try {
+      final result = await _apiClient.syncInbox(dryRun: _dryRun);
+      if (result.status == 'dry_run') {
+        setState(() {
+          _lastActionMessage = '收件箱 dry_run 已完成，未读取真实邮箱。';
+        });
+      } else {
+        final candidates = await _apiClient.listCandidates();
+        setState(() {
+          _setEmailsFromCandidates(candidates);
+          _lastActionMessage =
+              '收件箱同步完成：扫描 ${result.scanned} 封，新增 ${result.imported} 位候选人。';
+        });
+      }
+    } on RecruitmentApiException catch (error) {
+      setState(() => _lastActionError = error.message);
+    } finally {
+      if (mounted) {
+        setState(() => _inboxSyncLoading = false);
+      }
+    }
+  }
+
   Future<void> _runCandidateAction(
     Email email,
     RecruitmentAction action,
   ) async {
+    if (_apiClient == null) {
+      setState(() {
+        _lastActionError = '未配置 provider API，无法执行招聘动作。';
+      });
+      return;
+    }
     setState(() {
       _runningAction = action;
       _lastActionError = null;
@@ -239,26 +431,12 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     });
     try {
       final params = _paramsForAction(email, action);
-      final result = _apiClient == null
-          ? RecruitmentActionResult(
-              actionId: 'mock_action',
-              candidateId: email.candidateId,
-              action: action.value,
-              status: _dryRun
-                  ? 'dry_run'
-                  : action == RecruitmentAction.createInterviewNotice
-                  ? 'draft'
-                  : 'sent',
-              message: _dryRun
-                  ? '已完成 dry_run 预览，未发送邮件'
-                  : _actionDoneMessage(action),
-            )
-          : await _apiClient.runAction(
-              candidateId: email.candidateId,
-              action: action,
-              dryRun: _dryRun,
-              params: params,
-            );
+      final result = await _apiClient.runAction(
+        candidateId: email.candidateId,
+        action: action,
+        dryRun: _dryRun,
+        params: params,
+      );
       setState(() {
         _lastActionMessage = '${_actionLabel(action)}：${result.message}';
       });
@@ -267,6 +445,75 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     } finally {
       if (mounted) {
         setState(() => _runningAction = null);
+      }
+    }
+  }
+
+  Future<void> _openResumeAttachment(
+    Email email,
+    int attachmentIndex,
+    RecruitmentResumeAttachment attachment,
+  ) async {
+    await _loadResumeAttachment(
+      email,
+      attachmentIndex,
+      attachment,
+      openExternal: true,
+    );
+  }
+
+  Future<void> _loadResumeAttachment(
+    Email email,
+    int attachmentIndex,
+    RecruitmentResumeAttachment attachment, {
+    required bool openExternal,
+  }) async {
+    if (_apiClient == null) {
+      setState(() {
+        _lastActionError = '未配置 provider API，无法打开简历附件。';
+      });
+      return;
+    }
+    final key = _attachmentKey(email, attachmentIndex);
+    setState(() {
+      _openingAttachmentKey = key;
+      _resumePreview = null;
+      _lastActionError = null;
+      _lastActionMessage = null;
+    });
+    try {
+      final view = await _apiClient.createResumeView(
+        candidateId: email.candidateId,
+        attachmentIndex: attachmentIndex,
+      );
+      if (openExternal) {
+        openBrowserUrl(view.url);
+        unawaited(
+          Clipboard.setData(ClipboardData(text: view.url)).catchError((_) {}),
+        );
+      }
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _resumePreview = _ResumePreview(
+          key: key,
+          fileName: attachment.fileName,
+          contentType: attachment.contentType,
+          url: view.url,
+          expiresAt: view.expiresAt,
+        );
+        _lastActionMessage = openExternal
+            ? '已打开简历预览，并复制临时链接：${attachment.fileName}'
+            : '已加载简历预览：${attachment.fileName}';
+      });
+    } on RecruitmentApiException catch (error) {
+      if (mounted) {
+        setState(() => _lastActionError = error.message);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _openingAttachmentKey = null);
       }
     }
   }
@@ -326,9 +573,25 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
                 onChanged: (value) => setState(() => _dryRun = value),
               ),
               Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: OutlinedButton.icon(
+                  onPressed: _inboxSyncLoading ? null : _syncInbox,
+                  icon: _inboxSyncLoading
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.mark_email_unread_outlined, size: 18),
+                  label: Text(_inboxSyncLoading ? '拉取中' : '拉取新邮件'),
+                ),
+              ),
+              Padding(
                 padding: const EdgeInsets.only(right: 12),
                 child: FilledButton.icon(
-                  onPressed: _reportLoading ? null : _createReport,
+                  onPressed: _reportLoading || _inboxSyncLoading
+                      ? null
+                      : _createReport,
                   icon: _reportLoading
                       ? const SizedBox(
                           width: 16,
@@ -352,7 +615,11 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
           if (snapshot.hasError) {
             return Center(child: Text('加载失败：${_safeError(snapshot.error)}'));
           }
-          _emails = snapshot.data!;
+          if (!_emailsInitialized) {
+            _emails = snapshot.data!;
+            _emailsInitialized = true;
+            _scheduleAutoOpenSelectedResume();
+          }
           return Column(
             children: [
               _buildStats(),
@@ -406,46 +673,81 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
       ),
       child: Row(
         children: [
-          _statItem('总邮件', _total.toString()),
+          _statItem('总邮件', _total.toString(), filter: InboxFilter.all),
           _statItem(
-            '仅简历',
-            _onlyCount.toString(),
+            '未自动处理',
+            _unprocessedCount.toString(),
             color: const Color(0xFF991B1B),
+            filter: InboxFilter.unprocessed,
           ),
           _statItem(
             '有正文',
             _hasCount.toString(),
             color: const Color(0xFF166534),
+            filter: InboxFilter.hasBody,
           ),
-          _statItem('自动处理', '$_processed/$_total'),
+          _statItem(
+            '自动处理',
+            '$_processed/$_total',
+            filter: InboxFilter.processed,
+          ),
         ],
       ),
     );
   }
 
-  Widget _statItem(String label, String value, {Color? color}) {
+  Widget _statItem(
+    String label,
+    String value, {
+    required InboxFilter filter,
+    Color? color,
+  }) {
+    final selected = _filter == filter;
     return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        decoration: BoxDecoration(
-          border: Border(right: BorderSide(color: Colors.grey.shade300)),
-        ),
-        child: Column(
-          children: [
-            Text(
-              value,
-              style: TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.w700,
-                color: color ?? Theme.of(context).colorScheme.primary,
+      child: Material(
+        color: selected ? const Color(0xFFEFF6FF) : Colors.transparent,
+        child: InkWell(
+          key: ValueKey('inbox-filter-${filter.name}'),
+          onTap: () => _setFilter(filter),
+          mouseCursor: SystemMouseCursors.click,
+          child: Semantics(
+            button: true,
+            label: '$label $value',
+            selected: selected,
+            child: Ink(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              decoration: BoxDecoration(
+                border: Border(
+                  right: BorderSide(color: Colors.grey.shade300),
+                  bottom: selected
+                      ? BorderSide(
+                          color: Theme.of(context).colorScheme.primary,
+                          width: 2,
+                        )
+                      : BorderSide.none,
+                ),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    value,
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                      color: color ?? Theme.of(context).colorScheme.primary,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    label,
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 2),
-            Text(
-              label,
-              style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -468,7 +770,7 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
                 style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
               ),
               Text(
-                '${_emails.length} 封',
+                '${_visibleEmails.length} 封',
                 style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
               ),
             ],
@@ -476,8 +778,8 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
         ),
         Expanded(
           child: ListView.builder(
-            itemCount: _emails.length,
-            itemBuilder: (_, i) => _buildEmailTile(_emails[i]),
+            itemCount: _visibleEmails.length,
+            itemBuilder: (_, i) => _buildEmailTile(_visibleEmails[i]),
           ),
         ),
       ],
@@ -569,7 +871,10 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
           children: [
             Icon(Icons.email_outlined, size: 48, color: Colors.grey.shade300),
             const SizedBox(height: 8),
-            Text('选择一封邮件查看', style: TextStyle(color: Colors.grey.shade400)),
+            Text(
+              _emails.isEmpty ? '暂无候选人，请先拉取新邮件' : '选择一封邮件查看',
+              style: TextStyle(color: Colors.grey.shade400),
+            ),
           ],
         ),
       );
@@ -588,7 +893,7 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
               _tag(_detectLabel(e.detected), dbg, dc),
               const SizedBox(width: 8),
               _tag(
-                _apiClient == null ? 'mock fallback' : 'provider API',
+                'provider API',
                 const Color(0xFFF1F5F9),
                 const Color(0xFF334155),
               ),
@@ -633,16 +938,11 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
           const SizedBox(height: 16),
           _bodyCard(e),
           const SizedBox(height: 12),
-          Row(
-            children: [
-              const Icon(Icons.attach_file, size: 18, color: Colors.grey),
-              const SizedBox(width: 4),
-              Text(
-                '简历.pdf${e.extra.isNotEmpty ? ' + ${e.extra}' : ''}',
-                style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
-              ),
-            ],
-          ),
+          _attachmentsCard(e),
+          if (_resumePreview != null) ...[
+            const SizedBox(height: 12),
+            _resumePreviewCard(_resumePreview!),
+          ],
           const SizedBox(height: 16),
           _screeningCard(e, dc, dbg),
           const SizedBox(height: 16),
@@ -666,14 +966,270 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
         color: Colors.grey.shade50,
         borderRadius: BorderRadius.circular(8),
       ),
-      child: Text(
-        e.body.isEmpty ? '（无正文内容）' : e.body,
-        style: TextStyle(
-          fontSize: 14,
-          height: 1.7,
-          color: e.body.isEmpty ? Colors.grey.shade400 : null,
-          fontStyle: e.body.isEmpty ? FontStyle.italic : null,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '邮件正文',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: Colors.grey.shade700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            e.body.isEmpty ? '（无正文内容）' : e.body,
+            style: TextStyle(
+              fontSize: 14,
+              height: 1.7,
+              color: e.body.isEmpty ? Colors.grey.shade400 : null,
+              fontStyle: e.body.isEmpty ? FontStyle.italic : null,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _attachmentsCard(Email e) {
+    final attachments = e.resumeAttachments;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.grey.shade300),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.attach_file, size: 18, color: Colors.grey),
+              const SizedBox(width: 6),
+              const Text('简历附件', style: TextStyle(fontWeight: FontWeight.w700)),
+              if (e.extra.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                _tag(e.extra, const Color(0xFFF1F5F9), const Color(0xFF334155)),
+              ],
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (attachments.isEmpty)
+            Text(
+              e.hasResume ? '已检测到简历附件，但 provider 未返回文件名或预览地址。' : '未检测到简历附件。',
+              style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+            )
+          else
+            ...attachments.asMap().entries.map(
+              (entry) => _attachmentRow(e, entry.key, entry.value),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _attachmentRow(
+    Email email,
+    int attachmentIndex,
+    RecruitmentResumeAttachment attachment,
+  ) {
+    final key = _attachmentKey(email, attachmentIndex);
+    final opening = _openingAttachmentKey == key;
+    final previewReady = _resumePreview?.key == key;
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(6),
+        onTap: opening
+            ? null
+            : () => _openResumeAttachment(email, attachmentIndex, attachment),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(
+            children: [
+              Icon(
+                _attachmentIcon(attachment),
+                size: 18,
+                color: Colors.grey.shade600,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      attachment.fileName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    Text(
+                      _attachmentMeta(
+                        attachment,
+                        opening: opening,
+                        previewReady: previewReady,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: opening
+                    ? null
+                    : () =>
+                          _openResumeAttachment(email, attachmentIndex, attachment),
+                icon: opening
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Icon(
+                        previewReady ? Icons.refresh : Icons.open_in_new,
+                        size: 16,
+                      ),
+                label: Text(
+                  opening ? '打开中' : (previewReady ? '重新打开' : '打开简历'),
+                ),
+              ),
+            ],
+          ),
         ),
+      ),
+    );
+  }
+
+  IconData _attachmentIcon(RecruitmentResumeAttachment attachment) {
+    final name = attachment.fileName.toLowerCase();
+    if (name.endsWith('.pdf')) {
+      return Icons.picture_as_pdf_outlined;
+    }
+    if (name.endsWith('.doc') || name.endsWith('.docx')) {
+      return Icons.article_outlined;
+    }
+    return Icons.description_outlined;
+  }
+
+  String _attachmentMeta(
+    RecruitmentResumeAttachment attachment, {
+    required bool opening,
+    required bool previewReady,
+  }) {
+    final parts = <String>[
+      if (attachment.contentType.isNotEmpty) attachment.contentType,
+      if (attachment.sizeBytes != null) _formatBytes(attachment.sizeBytes!),
+      if (opening)
+        '正在生成预览'
+      else if (previewReady)
+        '已生成临时预览'
+      else
+        '自动生成预览中，可点击打开',
+    ];
+    return parts.join(' · ');
+  }
+
+  String _attachmentKey(Email email, int attachmentIndex) {
+    return '${email.candidateId}:$attachmentIndex';
+  }
+
+  Widget _resumePreviewCard(_ResumePreview preview) {
+    final isPdf = _isPdfResume(preview.fileName, preview.contentType);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.grey.shade300),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                isPdf ? Icons.picture_as_pdf_outlined : Icons.article_outlined,
+                size: 18,
+                color: Colors.grey.shade700,
+              ),
+              const SizedBox(width: 6),
+              const Text('简历预览', style: TextStyle(fontWeight: FontWeight.w700)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  preview.fileName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+                ),
+              ),
+              TextButton.icon(
+                onPressed: () => openBrowserUrl(preview.url),
+                icon: const Icon(Icons.open_in_new, size: 16),
+                label: const Text('新窗口打开'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            isPdf ? 'PDF 已在下方内嵌预览。' : 'Word 文件已生成临时链接，请在新窗口下载或用本机 Office 查看。',
+            style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+          ),
+          if (preview.expiresAt != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              '临时链接 5 分钟内有效。',
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+            ),
+          ],
+          const SizedBox(height: 10),
+          if (isPdf)
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: SizedBox(
+                key: const ValueKey('resume-preview-frame'),
+                height: 640,
+                child: ResumePreviewFrame(url: preview.url, title: preview.fileName),
+              ),
+            )
+          else
+            _resumeDownloadPlaceholder(preview),
+        ],
+      ),
+    );
+  }
+
+  Widget _resumeDownloadPlaceholder(_ResumePreview preview) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        border: Border.all(color: Colors.grey.shade200),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.file_download_outlined, color: Colors.grey.shade600),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '浏览器会下载 ${preview.fileName}，当前页面保留该附件的临时访问链接。',
+              style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -707,15 +1263,24 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
   }
 
   Widget _buildManualButtons(Email e) {
+    final marking = _markingEmailId == e.id;
     return Row(
       children: [
         FilledButton.icon(
           onPressed:
-              e.status == EmailStatus.passed || e.status == EmailStatus.rejected
+              marking ||
+                  e.status == EmailStatus.passed ||
+                  e.status == EmailStatus.rejected
               ? null
-              : () => _mark(e.id, EmailStatus.passed),
-          icon: const Icon(Icons.check, size: 18),
-          label: const Text('通过'),
+              : () => _mark(e, EmailStatus.passed),
+          icon: marking
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.check, size: 18),
+          label: Text(marking ? '保存中' : '通过'),
           style: FilledButton.styleFrom(
             backgroundColor: const Color(0xFF166534),
           ),
@@ -723,9 +1288,11 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
         const SizedBox(width: 8),
         OutlinedButton.icon(
           onPressed:
-              e.status == EmailStatus.rejected || e.status == EmailStatus.passed
+              marking ||
+                  e.status == EmailStatus.rejected ||
+                  e.status == EmailStatus.passed
               ? null
-              : () => _mark(e.id, EmailStatus.rejected),
+              : () => _mark(e, EmailStatus.rejected),
           icon: const Icon(Icons.close, size: 18),
           label: const Text('拒绝'),
           style: OutlinedButton.styleFrom(
@@ -885,14 +1452,6 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     );
   }
 
-  String _mockReportMarkdown() {
-    return '# 招聘统计报告\n\n'
-        '- 总邮件：$_total\n'
-        '- 有正文：$_hasCount\n'
-        '- 仅简历：$_onlyCount\n\n'
-        '> mock fallback：未调用 provider。';
-  }
-
   String _actionLabel(RecruitmentAction action) {
     switch (action) {
       case RecruitmentAction.sendSurvey:
@@ -906,19 +1465,6 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     }
   }
 
-  String _actionDoneMessage(RecruitmentAction action) {
-    switch (action) {
-      case RecruitmentAction.sendSurvey:
-        return '问卷邮件已发送';
-      case RecruitmentAction.sendTrainingInvite:
-        return '实训邀约已发送';
-      case RecruitmentAction.sendExam:
-        return '笔试邀请已发送';
-      case RecruitmentAction.createInterviewNotice:
-        return '面试通知草稿已生成';
-    }
-  }
-
   String _safeError(Object? error) {
     if (error is RecruitmentApiException) {
       return error.message;
@@ -927,19 +1473,49 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
   }
 }
 
-String _positionFromSubject(String subject) {
-  for (final position in [
-    '前端开发',
-    '后端开发',
-    '产品经理',
-    '数据分析师',
-    'UI 设计师',
-    '市场推广',
-    '运营',
-  ]) {
-    if (subject.contains(position)) return position;
+String _displayName(RecruitmentCandidate candidate) {
+  final name = candidate.name.trim();
+  if (name.isNotEmpty && !_hasGarbledText(name)) {
+    return name;
   }
-  return '';
+  final fromSubject = _nameFromSubject(candidate.subject);
+  if (fromSubject != null) {
+    return fromSubject;
+  }
+  return candidate.email;
+}
+
+bool _hasGarbledText(String value) {
+  return value.contains('\u{FFFD}') || value.contains('�');
+}
+
+EmailStatus _emailStatusFromCandidate(String status) {
+  switch (status.trim().toLowerCase()) {
+    case 'passed':
+      return EmailStatus.passed;
+    case 'rejected':
+      return EmailStatus.rejected;
+    default:
+      return EmailStatus.pending;
+  }
+}
+
+String? _nameFromSubject(String subject) {
+  final parts = RegExp(r'\[([^\]]+)\]')
+      .allMatches(subject)
+      .map((match) => match.group(1)?.trim() ?? '')
+      .where((value) => value.isNotEmpty)
+      .toList();
+  if (parts.length >= 2) {
+    return parts[1];
+  }
+  return null;
+}
+
+bool _isPdfResume(String fileName, String contentType) {
+  final lowerName = fileName.trim().toLowerCase();
+  final lowerType = contentType.trim().toLowerCase();
+  return lowerName.endsWith('.pdf') || lowerType == 'application/pdf';
 }
 
 String _defaultInterviewTime() {
@@ -947,4 +1523,16 @@ String _defaultInterviewTime() {
   final month = date.month.toString().padLeft(2, '0');
   final day = date.day.toString().padLeft(2, '0');
   return '${date.year}-$month-$day 10:00';
+}
+
+String _formatBytes(int bytes) {
+  if (bytes < 1024) {
+    return '$bytes B';
+  }
+  final kb = bytes / 1024;
+  if (kb < 1024) {
+    return '${kb.toStringAsFixed(1)} KB';
+  }
+  final mb = kb / 1024;
+  return '${mb.toStringAsFixed(1)} MB';
 }

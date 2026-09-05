@@ -24,6 +24,16 @@ func newTestServer() *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
+func TestWriteJSONDeclaresUTF8(t *testing.T) {
+	recorder := httptest.NewRecorder()
+
+	writeJSON(recorder, http.StatusOK, map[string]string{"message": "中文正文"})
+
+	if got := recorder.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+}
+
 func TestTimesheetCRUD(t *testing.T) {
 	ts := newTestServer()
 	defer ts.Close()
@@ -65,8 +75,8 @@ func TestTimesheetValidation(t *testing.T) {
 	defer ts.Close()
 
 	for _, body := range []string{
-		`{"date":"2026-08-12","hours":6}`,        // 缺 userId
-		`{"userId":"u-1","hours":6}`,             // 缺 date
+		`{"date":"2026-08-12","hours":6}`,                 // 缺 userId
+		`{"userId":"u-1","hours":6}`,                      // 缺 date
 		`{"userId":"u-1","date":"2026-08-12","hours":0}`,  // hours 0
 		`{"userId":"u-1","date":"2026-08-12","hours":25}`, // hours > 24
 	} {

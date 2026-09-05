@@ -2,15 +2,22 @@ package handler
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/mail"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/quanttide/qtcloud-human/src/provider/internal/domain"
@@ -19,23 +26,37 @@ import (
 )
 
 const defaultDryRun = true
+const resumeViewTTL = 5 * time.Minute
 
 var isoDatePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 type RecruitmentAdapter interface {
 	CreateReport(ctx context.Context, req domain.RecruitmentReportRequest) (domain.RecruitmentAdapterReportResult, error)
+	SyncInbox(ctx context.Context, req domain.RecruitmentInboxSyncRequest) (domain.RecruitmentAdapterInboxSyncResult, error)
+	FetchResume(ctx context.Context, candidate domain.RecruitmentCandidate, attachment domain.RecruitmentResumeAttachment) (domain.RecruitmentAdapterResumeResult, error)
 	RunAction(ctx context.Context, candidate domain.RecruitmentCandidate, req domain.RecruitmentActionRequest) (domain.RecruitmentAdapterActionResult, error)
 }
 
+type resumeView struct {
+	Path        string
+	FileName    string
+	ContentType string
+	ExpiresAt   time.Time
+}
+
 type RecruitmentHandlerConfig struct {
-	DryRunDefault bool
+	DryRunDefault   bool
+	ResumeCacheRoot string
 }
 
 type RecruitmentHandler struct {
-	store         *store.RecruitmentStore
-	adapter       RecruitmentAdapter
-	audit         recruitment.AuditLogger
-	dryRunDefault bool
+	store           *store.RecruitmentStore
+	adapter         RecruitmentAdapter
+	audit           recruitment.AuditLogger
+	dryRunDefault   bool
+	resumeCacheRoot string
+	resumeViews     map[string]resumeView
+	resumeViewMu    sync.Mutex
 }
 
 func NewRecruitmentHandler(s *store.RecruitmentStore, adapter RecruitmentAdapter, audit recruitment.AuditLogger, config RecruitmentHandlerConfig) *RecruitmentHandler {
@@ -46,17 +67,23 @@ func NewRecruitmentHandler(s *store.RecruitmentStore, adapter RecruitmentAdapter
 		audit = recruitment.SlogAuditLogger{}
 	}
 	return &RecruitmentHandler{
-		store:         s,
-		adapter:       adapter,
-		audit:         audit,
-		dryRunDefault: config.DryRunDefault,
+		store:           s,
+		adapter:         adapter,
+		audit:           audit,
+		dryRunDefault:   config.DryRunDefault,
+		resumeCacheRoot: cleanOptionalAbsPath(config.ResumeCacheRoot),
+		resumeViews:     map[string]resumeView{},
 	}
 }
 
 func (h *RecruitmentHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/recruitment/candidates", h.ListCandidates)
+	mux.HandleFunc("POST /api/v1/recruitment/inbox/sync", h.SyncInbox)
 	mux.HandleFunc("POST /api/v1/recruitment/reports", h.CreateReport)
+	mux.HandleFunc("PATCH /api/v1/recruitment/candidates/{candidate_id}", h.UpdateCandidateStatus)
 	mux.HandleFunc("POST /api/v1/recruitment/candidates/{candidate_id}/actions", h.RunCandidateAction)
+	mux.HandleFunc("POST /api/v1/recruitment/candidates/{candidate_id}/resume/{attachment_index}/view", h.CreateResumeView)
+	mux.HandleFunc("GET /api/v1/recruitment/resume-view/{token}", h.ServeResumeView)
 }
 
 func (h *RecruitmentHandler) ListCandidates(w http.ResponseWriter, r *http.Request) {
@@ -118,6 +145,107 @@ func (h *RecruitmentHandler) CreateReport(w http.ResponseWriter, r *http.Request
 		CreatedAt: now,
 	})
 	writeJSON(w, http.StatusCreated, response)
+}
+
+func (h *RecruitmentHandler) SyncInbox(w http.ResponseWriter, r *http.Request) {
+	operator := operatorFromRequest(r)
+	if operator == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "operator required"})
+		return
+	}
+	if !canWriteRecruitment(r) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "recruitment write permission required"})
+		return
+	}
+	var req domain.RecruitmentInboxSyncRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if err := validateInboxSyncRequest(req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	req = h.normalizeInboxSyncRequest(req)
+
+	adapterResult, err := h.adapter.SyncInbox(r.Context(), req)
+	now := time.Now().UTC()
+	status := adapterResult.Status
+	if status == "" {
+		status = domain.RecruitmentInboxStatusSynced
+	}
+	response := domain.RecruitmentInboxSyncResult{
+		SyncID:     newID("sync", now),
+		Status:     status,
+		Mailbox:    adapterResult.Mailbox,
+		Folder:     adapterResult.Folder,
+		Scanned:    adapterResult.Scanned,
+		Imported:   adapterResult.Imported,
+		Candidates: adapterResult.Candidates,
+		CreatedAt:  now,
+	}
+	if err != nil {
+		response.Status = domain.RecruitmentInboxStatusFailed
+		h.logAudit(domain.RecruitmentAuditEntry{
+			ActionID:  response.SyncID,
+			Action:    domain.RecruitmentActionSyncInbox,
+			Operator:  operator,
+			Status:    domain.RecruitmentActionStatusFailed,
+			Message:   publicAdapterError(err),
+			CreatedAt: now,
+		})
+		writeJSON(w, adapterErrorStatus(err), map[string]string{"error": publicAdapterError(err)})
+		return
+	}
+	if !req.IsDryRun(h.dryRunDefault) {
+		h.store.ReplaceCandidates(adapterResult.Candidates)
+	}
+	h.logAudit(domain.RecruitmentAuditEntry{
+		ActionID:  response.SyncID,
+		Action:    domain.RecruitmentActionSyncInbox,
+		Operator:  operator,
+		Status:    response.Status,
+		Message:   fmt.Sprintf("inbox sync completed: scanned=%d imported=%d", response.Scanned, response.Imported),
+		CreatedAt: now,
+	})
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *RecruitmentHandler) UpdateCandidateStatus(w http.ResponseWriter, r *http.Request) {
+	operator := operatorFromRequest(r)
+	if operator == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "operator required"})
+		return
+	}
+	if !canWriteRecruitment(r) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "recruitment write permission required"})
+		return
+	}
+	var req domain.RecruitmentCandidateStatusUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	status := normalizeCandidateStatus(req.Status)
+	if status == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "status must be passed or rejected"})
+		return
+	}
+	candidate, ok := h.store.UpdateCandidateStatus(r.PathValue("candidate_id"), status)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "candidate not found"})
+		return
+	}
+	h.logAudit(domain.RecruitmentAuditEntry{
+		ActionID:    newID("status", candidate.UpdatedAt),
+		CandidateID: candidate.ID,
+		Action:      domain.RecruitmentActionUpdateCandidateStatus,
+		Operator:    operator,
+		Status:      candidate.Status,
+		Message:     "candidate status updated",
+		CreatedAt:   candidate.UpdatedAt,
+	})
+	writeJSON(w, http.StatusOK, candidate)
 }
 
 func (h *RecruitmentHandler) RunCandidateAction(w http.ResponseWriter, r *http.Request) {
@@ -189,6 +317,107 @@ func (h *RecruitmentHandler) RunCandidateAction(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusCreated, response)
 }
 
+func (h *RecruitmentHandler) CreateResumeView(w http.ResponseWriter, r *http.Request) {
+	operator := operatorFromRequest(r)
+	if operator == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "operator required"})
+		return
+	}
+	candidate, attachment, ok := h.resumeAttachmentFromRequest(w, r)
+	if !ok {
+		return
+	}
+	if attachment.SourceID == "" || candidate.SourceMessageID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "resume attachment is not downloadable"})
+		return
+	}
+	if !isAllowedResumeFileName(attachment.FileName) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported resume file type"})
+		return
+	}
+	adapterResult, err := h.adapter.FetchResume(r.Context(), candidate, attachment)
+	if err != nil {
+		writeJSON(w, adapterErrorStatus(err), map[string]string{"error": publicAdapterError(err)})
+		return
+	}
+	resolved, err := filepath.Abs(adapterResult.Path)
+	if err != nil || !isAllowedResumeFileName(adapterResult.FileName) {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "招聘服务暂不可用，请稍后重试"})
+		return
+	}
+	if !pathIsUnderRoot(resolved, h.resumeCacheRoot) {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "招聘服务暂不可用，请稍后重试"})
+		return
+	}
+	if info, err := os.Stat(resolved); err != nil || info.IsDir() {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "招聘服务暂不可用，请稍后重试"})
+		return
+	}
+
+	token, err := newResumeToken()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "招聘服务暂不可用，请稍后重试"})
+		return
+	}
+	expiresAt := time.Now().UTC().Add(resumeViewTTL)
+	h.resumeViewMu.Lock()
+	h.pruneResumeViewsLocked(time.Now().UTC())
+	h.resumeViews[token] = resumeView{
+		Path:        resolved,
+		FileName:    adapterResult.FileName,
+		ContentType: firstNonEmpty(adapterResult.ContentType, mime.TypeByExtension(filepath.Ext(adapterResult.FileName))),
+		ExpiresAt:   expiresAt,
+	}
+	h.resumeViewMu.Unlock()
+
+	writeJSON(w, http.StatusCreated, domain.RecruitmentResumeViewResult{
+		URL:       "/api/v1/recruitment/resume-view/" + token,
+		ExpiresAt: expiresAt,
+	})
+}
+
+func (h *RecruitmentHandler) ServeResumeView(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(r.PathValue("token"))
+	if token == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "resume view not found"})
+		return
+	}
+	now := time.Now().UTC()
+	h.resumeViewMu.Lock()
+	h.pruneResumeViewsLocked(now)
+	view, ok := h.resumeViews[token]
+	h.resumeViewMu.Unlock()
+	if !ok || now.After(view.ExpiresAt) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "resume view not found"})
+		return
+	}
+	if info, err := os.Stat(view.Path); err != nil || info.IsDir() {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "resume view not found"})
+		return
+	}
+	contentType := firstNonEmpty(view.ContentType, mime.TypeByExtension(filepath.Ext(view.FileName)), "application/octet-stream")
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", contentDisposition(view.FileName, contentType))
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeFile(w, r, view.Path)
+}
+
+func (h *RecruitmentHandler) resumeAttachmentFromRequest(w http.ResponseWriter, r *http.Request) (domain.RecruitmentCandidate, domain.RecruitmentResumeAttachment, bool) {
+	candidateID := strings.TrimSpace(r.PathValue("candidate_id"))
+	candidate, ok := h.store.GetCandidate(candidateID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "candidate not found"})
+		return domain.RecruitmentCandidate{}, domain.RecruitmentResumeAttachment{}, false
+	}
+	index, err := strconv.Atoi(r.PathValue("attachment_index"))
+	if err != nil || index < 0 || index >= len(candidate.ResumeAttachments) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "resume attachment not found"})
+		return domain.RecruitmentCandidate{}, domain.RecruitmentResumeAttachment{}, false
+	}
+	return candidate, candidate.ResumeAttachments[index], true
+}
+
 func validateReportRequest(req domain.RecruitmentReportRequest) error {
 	if req.Days != nil && (*req.Days < 1 || *req.Days > 366) {
 		return errors.New("days must be between 1 and 366")
@@ -225,6 +454,52 @@ func (h *RecruitmentHandler) normalizeActionRequest(req domain.RecruitmentAction
 		req.DryRun = &dryRun
 	}
 	return req
+}
+
+func (h *RecruitmentHandler) normalizeInboxSyncRequest(req domain.RecruitmentInboxSyncRequest) domain.RecruitmentInboxSyncRequest {
+	if strings.TrimSpace(req.Mailbox) == "" {
+		req.Mailbox = "hr@quanttide.com"
+	}
+	if strings.TrimSpace(req.Folder) == "" {
+		req.Folder = "INBOX"
+	}
+	if req.PageSize == nil {
+		pageSize := 50
+		req.PageSize = &pageSize
+	}
+	if req.DryRun == nil {
+		dryRun := h.dryRunDefault
+		req.DryRun = &dryRun
+	}
+	return req
+}
+
+func validateInboxSyncRequest(req domain.RecruitmentInboxSyncRequest) error {
+	mailbox := strings.TrimSpace(req.Mailbox)
+	if mailbox != "" {
+		if _, err := mail.ParseAddress(mailbox); err != nil || len(mailbox) > 254 {
+			return errors.New("mailbox is invalid")
+		}
+	}
+	folder := strings.TrimSpace(req.Folder)
+	if folder != "" && (len([]rune(folder)) > 80 || strings.ContainsAny(folder, "\x00\r\n")) {
+		return errors.New("folder is invalid")
+	}
+	if req.PageSize != nil && (*req.PageSize < 1 || *req.PageSize > 100) {
+		return errors.New("page_size must be between 1 and 100")
+	}
+	return nil
+}
+
+func normalizeCandidateStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "passed":
+		return "passed"
+	case "rejected":
+		return "rejected"
+	default:
+		return ""
+	}
 }
 
 func validateActionRequest(req domain.RecruitmentActionRequest) error {
@@ -291,6 +566,67 @@ func requireString(params map[string]any, key string, max int) error {
 		return fmt.Errorf("%s is too long", key)
 	}
 	return nil
+}
+
+func isAllowedResumeFileName(fileName string) bool {
+	lower := strings.ToLower(strings.TrimSpace(fileName))
+	return strings.HasSuffix(lower, ".pdf") || strings.HasSuffix(lower, ".doc") || strings.HasSuffix(lower, ".docx")
+}
+
+func newResumeToken() (string, error) {
+	var bytes [32]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes[:]), nil
+}
+
+func (h *RecruitmentHandler) pruneResumeViewsLocked(now time.Time) {
+	for token, view := range h.resumeViews {
+		if now.After(view.ExpiresAt) {
+			delete(h.resumeViews, token)
+		}
+	}
+}
+
+func contentDisposition(fileName string, contentType string) string {
+	disposition := "attachment"
+	if contentType == "application/pdf" {
+		disposition = "inline"
+	}
+	return fmt.Sprintf("%s; filename=%q", disposition, filepath.Base(fileName))
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func cleanOptionalAbsPath(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	resolved, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	return filepath.Clean(resolved)
+}
+
+func pathIsUnderRoot(path string, root string) bool {
+	if root == "" {
+		return true
+	}
+	resolved := filepath.Clean(path)
+	relative, err := filepath.Rel(root, resolved)
+	if err != nil {
+		return false
+	}
+	return relative == "." || (relative != "" && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && relative != "..")
 }
 
 func validateOptionalURL(params map[string]any, key string, label string) error {
