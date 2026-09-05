@@ -16,7 +16,7 @@ qtcloud_hr_studio 是量潮人事云工作台——侧边导航切换模块：�
 
 ## 组件规划
 
-招聘页面连接 `qtrecurit` CLI 能力的设计见 [qtrecurit-cli-integration.md](./qtrecurit-cli-integration.md)，实施计划见 [plan.md](./plan.md)，优先覆盖 `report` 和 `access` 命令。
+招聘页面连接 `qtrecurit` CLI 能力的设计见 [qtrecurit-cli-integration.md](./qtrecurit-cli-integration.md)，实施计划见 [plan.md](./plan.md)，预览版同事使用说明见 [preview-user-guide.md](./preview-user-guide.md)，优先覆盖 `report` 和 `access` 命令。
 
 - 指标卡：模块、数字、标签（总览）
 - 动态条目：模块、标题、时间（总览）
