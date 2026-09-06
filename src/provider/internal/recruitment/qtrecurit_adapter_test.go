@@ -30,6 +30,7 @@ func (f *fakeCommandRunner) Run(ctx context.Context, binary string, args []strin
 		if output, ok := f.outputs[key]; ok {
 			return output.stdout, output.stderr, output.err
 		}
+		return "", "", ErrAdapterFailed
 	}
 	return f.stdout, f.stderr, f.err
 }
@@ -338,8 +339,8 @@ func TestCheckProviderStatusReportsReadyWhenCLIAndMailboxWork(t *testing.T) {
 		"qtrecurit --version": {
 			stdout: "qtrecurit 0.1.0\n",
 		},
-		"lark-cli mail user_mailboxes profile --mailbox hr@quanttide.com --format json": {
-			stdout: `{"data":{"email":"hr@quanttide.com"}}`,
+		"lark-cli mail user_mailbox.folders list --user-mailbox-id hr@quanttide.com --folder-type 1 --as user --format json": {
+			stdout: `{"data":{"items":[{"id":"INBOX","name":"INBOX"}]}}`,
 		},
 	}}
 	adapter := NewCLIAdapter("qtrecurit", 0)
@@ -360,7 +361,7 @@ func TestCheckProviderStatusReportsBlockedWhenMailboxFailsWithoutLeakingDetails(
 		"qtrecurit --version": {
 			stdout: "qtrecurit 0.1.0\n",
 		},
-		"lark-cli mail user_mailboxes profile --mailbox hr@quanttide.com --format json": {
+		"lark-cli mail user_mailbox.folders list --user-mailbox-id hr@quanttide.com --folder-type 1 --as user --format json": {
 			stderr: "token=secret mail body stack trace",
 			err:    ErrAdapterFailed,
 		},

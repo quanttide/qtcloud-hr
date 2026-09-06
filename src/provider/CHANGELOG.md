@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## [0.1.3] - 2026-09-06
+
+### Added
+
+- Provider 启动时显式设置 `HOME`、`LARKSUITE_CLI_CONFIG_DIR` 和 `LARKSUITE_CLI_DATA_DIR`，为 FC 运行时挂载生产 `lark-cli` 用户认证态提供稳定路径。
+- Terraform 支持将私有 OSS 前缀挂载到 `/home/app` 承载 `lark-cli` 凭证目录，并给 FC 角色授予该前缀最小读写权限，以便 token 自动刷新。
+
+### Fixed
+
+- 修复 HR 邮箱认证态检测命令，改为使用当前 `lark-cli` 支持的邮箱文件夹只读探测，避免 `--mailbox` 参数不兼容导致误判失败。
+
 ## [0.1.2] - 2026-09-06
 
 ### Added

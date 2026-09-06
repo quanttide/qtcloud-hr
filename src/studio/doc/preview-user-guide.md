@@ -6,7 +6,7 @@
 
 - 线上地址：<https://human.cloud.quanttide.com/>
 - 当前前端版本：`studio/v0.1.0-alpha.3`
-- 当前后端版本：`provider/v0.1.1`
+- 当前后端版本：`provider/v0.1.3`
 - Provider API：`https://qtcloudman-prod-eqpdghspoh.cn-hangzhou.fcapp.run`
 
 ## 当前可用范围
@@ -100,6 +100,7 @@
 - 已验证 provider 候选人列表返回 `200`。
 - 已验证 provider 报告接口返回 `201` 和 `dry_run` 报告。
 - 已验证真实收件箱同步返回 `403 real recruitment actions are disabled`，预览版不会误触发真实招聘动作。
+- 真实动作开关 `QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS` 仍未开启；需先在 provider 生产运行环境建立完整 HR 邮箱 `lark-cli` 认证态，并确认 `/api/v1/recruitment/provider/status` 返回 ready。
 
 ## 后续转正式版前必须补齐
 

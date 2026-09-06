@@ -15,6 +15,7 @@ import (
 )
 
 func main() {
+	configureLarkCLIEnvironment()
 	if err := configureRecruitmentCacheHome(); err != nil {
 		log.Fatalf("configure recruitment cache: %v", err)
 	}
@@ -50,6 +51,20 @@ func main() {
 	if err := http.ListenAndServe(addr, withCORS(mux, corsOrigins())); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+func configureLarkCLIEnvironment() {
+	if strings.TrimSpace(os.Getenv("HOME")) == "" {
+		_ = os.Setenv("HOME", "/home/app")
+	}
+	if strings.TrimSpace(os.Getenv("LARKSUITE_CLI_CONFIG_DIR")) == "" {
+		_ = os.Setenv("LARKSUITE_CLI_CONFIG_DIR", filepath.Join(os.Getenv("HOME"), ".lark-cli"))
+	}
+	if strings.TrimSpace(os.Getenv("LARKSUITE_CLI_DATA_DIR")) == "" {
+		_ = os.Setenv("LARKSUITE_CLI_DATA_DIR", filepath.Join(os.Getenv("HOME"), ".local", "share"))
+	}
+	_ = os.Setenv("LARKSUITE_CLI_NO_UPDATE_NOTIFIER", "1")
+	_ = os.Setenv("LARKSUITE_CLI_NO_SKILLS_NOTIFIER", "1")
 }
 
 func configureRecruitmentCacheHome() error {

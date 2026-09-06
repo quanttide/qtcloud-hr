@@ -217,7 +217,13 @@ func (a *CLIAdapter) checkQtrecurit(ctx context.Context) domain.RecruitmentProvi
 }
 
 func (a *CLIAdapter) checkMailbox(ctx context.Context) domain.RecruitmentProviderStatusComponent {
-	_, _, err := a.runRaw(ctx, "lark-cli", []string{"mail", "user_mailboxes", "profile", "--mailbox", defaultRecruitmentMailbox, "--format", "json"})
+	_, _, err := a.runRaw(ctx, "lark-cli", []string{
+		"mail", "user_mailbox.folders", "list",
+		"--user-mailbox-id", defaultRecruitmentMailbox,
+		"--folder-type", "1",
+		"--as", "user",
+		"--format", "json",
+	})
 	if err != nil {
 		return domain.RecruitmentProviderStatusComponent{
 			Name:    "hr_mailbox",

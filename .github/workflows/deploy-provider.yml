@@ -22,7 +22,12 @@ env:
   TF_VAR_environment: prod
   TF_VAR_cors_origins: https://human.cloud.quanttide.com
   TF_VAR_qtrecurit_dry_run_default: "true"
-  TF_VAR_allow_real_recruitment_actions: "false"
+  # 默认保持真实招聘动作关闭；只有仓库变量显式设为 true 时才打开。
+  TF_VAR_allow_real_recruitment_actions: ${{ vars.QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS == 'true' && 'true' || 'false' }}
+  # 可选：生产 lark-cli 用户认证态 OSS 挂载。未配置 bucket/prefix 时 Terraform 不挂载。
+  TF_VAR_lark_cli_credentials_oss_bucket: ${{ vars.QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_BUCKET || '' }}
+  TF_VAR_lark_cli_credentials_oss_prefix: ${{ vars.QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_PREFIX || '' }}
+  TF_VAR_lark_cli_credentials_oss_endpoint: ${{ vars.QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_ENDPOINT || 'oss-cn-hangzhou-internal.aliyuncs.com' }}
   TF_VAR_qtrecurit_timeout_seconds: "60"
   TF_STATE_BUCKET: quanttide-terraform-state
   TF_STATE_KEY: qtcloud-human/terraform.tfstate

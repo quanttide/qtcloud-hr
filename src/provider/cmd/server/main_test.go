@@ -35,6 +35,52 @@ func TestRecruitmentCacheHomePreservesExplicitOverride(t *testing.T) {
 	}
 }
 
+func TestConfigureLarkCLIEnvironmentDefaultsToProviderUserHome(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", "")
+	t.Setenv("LARKSUITE_CLI_DATA_DIR", "")
+	t.Setenv("LARKSUITE_CLI_NO_UPDATE_NOTIFIER", "")
+	t.Setenv("LARKSUITE_CLI_NO_SKILLS_NOTIFIER", "")
+
+	configureLarkCLIEnvironment()
+
+	if got := os.Getenv("HOME"); got != "/home/app" {
+		t.Fatalf("HOME = %q, want provider app home", got)
+	}
+	if got := os.Getenv("LARKSUITE_CLI_CONFIG_DIR"); got != filepath.Join("/home/app", ".lark-cli") {
+		t.Fatalf("LARKSUITE_CLI_CONFIG_DIR = %q", got)
+	}
+	if got := os.Getenv("LARKSUITE_CLI_DATA_DIR"); got != filepath.Join("/home/app", ".local", "share") {
+		t.Fatalf("LARKSUITE_CLI_DATA_DIR = %q", got)
+	}
+	if got := os.Getenv("LARKSUITE_CLI_NO_UPDATE_NOTIFIER"); got != "1" {
+		t.Fatalf("LARKSUITE_CLI_NO_UPDATE_NOTIFIER = %q", got)
+	}
+	if got := os.Getenv("LARKSUITE_CLI_NO_SKILLS_NOTIFIER"); got != "1" {
+		t.Fatalf("LARKSUITE_CLI_NO_SKILLS_NOTIFIER = %q", got)
+	}
+}
+
+func TestConfigureLarkCLIEnvironmentPreservesCredentialPathOverrides(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "lark-cli-config")
+	dataDir := filepath.Join(t.TempDir(), "lark-cli-data")
+	t.Setenv("HOME", "/custom-home")
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", configDir)
+	t.Setenv("LARKSUITE_CLI_DATA_DIR", dataDir)
+
+	configureLarkCLIEnvironment()
+
+	if got := os.Getenv("HOME"); got != "/custom-home" {
+		t.Fatalf("HOME = %q, want explicit home", got)
+	}
+	if got := os.Getenv("LARKSUITE_CLI_CONFIG_DIR"); got != configDir {
+		t.Fatalf("LARKSUITE_CLI_CONFIG_DIR = %q, want override %q", got, configDir)
+	}
+	if got := os.Getenv("LARKSUITE_CLI_DATA_DIR"); got != dataDir {
+		t.Fatalf("LARKSUITE_CLI_DATA_DIR = %q, want override %q", got, dataDir)
+	}
+}
+
 func TestAllowRealRecruitmentActionsDefaultsFalse(t *testing.T) {
 	t.Setenv("QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS", "")
 

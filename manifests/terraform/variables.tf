@@ -56,3 +56,21 @@ variable "qtrecurit_timeout_seconds" {
   type        = number
   default     = 60
 }
+
+variable "lark_cli_credentials_oss_bucket" {
+  description = "可选：保存 provider 生产 lark-cli 用户认证态的私有 OSS bucket。留空则不挂载"
+  type        = string
+  default     = ""
+}
+
+variable "lark_cli_credentials_oss_prefix" {
+  description = "可选：OSS bucket 内的 lark-cli 凭证目录前缀，应包含 .lark-cli 与 .local/share/lark-cli 内容"
+  type        = string
+  default     = ""
+}
+
+variable "lark_cli_credentials_oss_endpoint" {
+  description = "可选：lark-cli 凭证 OSS mount endpoint"
+  type        = string
+  default     = "oss-cn-hangzhou-internal.aliyuncs.com"
+}

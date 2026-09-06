@@ -6,3 +6,6 @@ cors_origins                   = "https://human.cloud.quanttide.com"
 qtrecurit_dry_run_default      = true
 allow_real_recruitment_actions = false
 qtrecurit_timeout_seconds      = 60
+lark_cli_credentials_oss_bucket   = ""
+lark_cli_credentials_oss_prefix   = ""
+lark_cli_credentials_oss_endpoint = "oss-cn-hangzhou-internal.aliyuncs.com"

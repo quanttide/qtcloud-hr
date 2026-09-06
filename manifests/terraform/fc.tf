@@ -1,6 +1,6 @@
 # FC 默认角色：允许 FC 服务挂载弹性网卡访问 VPC（应用级）
 resource "alicloud_ram_role" "fc" {
-  role_name                   = "${local.app_name_prefix}-fc"
+  role_name = "${local.app_name_prefix}-fc"
   assume_role_policy_document = jsonencode({
     Statement = [{
       Action    = "sts:AssumeRole"
@@ -18,18 +18,60 @@ resource "alicloud_ram_role_policy_attachment" "fc_vpc" {
   role_name   = alicloud_ram_role.fc.role_name
 }
 
+resource "alicloud_ram_policy" "lark_cli_credentials" {
+  count       = local.lark_cli_credentials_mount_enabled ? 1 : 0
+  policy_name = "${local.app_name_prefix}-lark-cli-credentials"
+  description = "qtcloud-human provider lark-cli 凭证 OSS 前缀最小读写权限"
+  policy_document = jsonencode({
+    Version = "1"
+    Statement = [
+      {
+        Action   = ["oss:ListObjects"]
+        Effect   = "Allow"
+        Resource = ["acs:oss:*:*:${var.lark_cli_credentials_oss_bucket}"]
+        Condition = {
+          StringLike = {
+            "oss:Prefix" = [
+              local.lark_cli_credentials_oss_key_prefix,
+              "${local.lark_cli_credentials_oss_key_prefix}/*",
+            ]
+          }
+        }
+      },
+      {
+        Action = [
+          "oss:GetObject",
+          "oss:PutObject",
+          "oss:DeleteObject",
+          "oss:ListParts",
+          "oss:AbortMultipartUpload",
+        ]
+        Effect   = "Allow"
+        Resource = ["acs:oss:*:*:${var.lark_cli_credentials_oss_bucket}/${local.lark_cli_credentials_oss_key_prefix}/*"]
+      }
+    ]
+  })
+}
+
+resource "alicloud_ram_role_policy_attachment" "fc_lark_cli_credentials" {
+  count       = local.lark_cli_credentials_mount_enabled ? 1 : 0
+  policy_name = alicloud_ram_policy.lark_cli_credentials[0].policy_name
+  policy_type = "Custom"
+  role_name   = alicloud_ram_role.fc.role_name
+}
+
 # 函数计算（FC 3.0）：custom-container 容器镜像，内置 qtrecurit CLI
 resource "alicloud_fcv3_function" "this" {
-  function_name = local.app_name_prefix
-  description   = "qtcloud-human 人力资源 API"
-  runtime       = "custom-container"
-  handler       = "index.handler"
-  cpu           = 0.5
-  memory_size   = var.fc_memory
-  disk_size     = 512
-  timeout       = var.fc_timeout
+  function_name   = local.app_name_prefix
+  description     = "qtcloud-human 人力资源 API"
+  runtime         = "custom-container"
+  handler         = "index.handler"
+  cpu             = 0.5
+  memory_size     = var.fc_memory
+  disk_size       = 512
+  timeout         = var.fc_timeout
   internet_access = true
-  role          = alicloud_ram_role.fc.arn
+  role            = alicloud_ram_role.fc.arn
 
   custom_container_config {
     image = var.image
@@ -39,7 +81,12 @@ resource "alicloud_fcv3_function" "this" {
   # 对齐 provider 运行时约定：容器监听 8080，招聘 API 默认 dry-run，
   # qtrecurit 收件箱/简历缓存和动作审计日志写入 FC 可写临时目录。
   environment_variables = {
+    HOME                                         = "/home/app"
     LISTEN_ADDR                                  = ":8080"
+    LARKSUITE_CLI_CONFIG_DIR                     = "/home/app/.lark-cli"
+    LARKSUITE_CLI_DATA_DIR                       = "/home/app/.local/share"
+    LARKSUITE_CLI_NO_SKILLS_NOTIFIER             = "1"
+    LARKSUITE_CLI_NO_UPDATE_NOTIFIER             = "1"
     QTCLOUD_HUMAN_CACHE_HOME                     = "/tmp/qtcloud-human/cache"
     QTCLOUD_HUMAN_ACTION_LOG_DIR                 = "/tmp/qtcloud-human/audit"
     QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS = tostring(var.allow_real_recruitment_actions)
@@ -47,6 +94,19 @@ resource "alicloud_fcv3_function" "this" {
     QTRECURIT_BIN                                = "/usr/local/bin/qtrecurit"
     QTRECURIT_DRY_RUN_DEFAULT                    = tostring(var.qtrecurit_dry_run_default)
     QTRECURIT_TIMEOUT_SECONDS                    = tostring(var.qtrecurit_timeout_seconds)
+  }
+
+  dynamic "oss_mount_config" {
+    for_each = local.lark_cli_credentials_mount_enabled ? [1] : []
+    content {
+      mount_points {
+        bucket_name = var.lark_cli_credentials_oss_bucket
+        bucket_path = local.lark_cli_credentials_bucket_path
+        endpoint    = var.lark_cli_credentials_oss_endpoint
+        mount_dir   = "/home/app"
+        read_only   = false
+      }
+    }
   }
 
   tags = {

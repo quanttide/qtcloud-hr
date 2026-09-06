@@ -1,1 +1,4 @@
 .quanttide/
+.lark-cli/
+lark-cli-config*.json
+lark-cli-credentials*/
