@@ -16,7 +16,10 @@ import (
 	"github.com/quanttide/qtcloud-human/src/provider/internal/domain"
 )
 
-const defaultRecruitmentMailbox = "hr@quanttide.com"
+const (
+	defaultRecruitmentMailbox    = "hr@quanttide.com"
+	defaultProviderStatusTimeout = 900 * time.Millisecond
+)
 
 var (
 	ErrAdapterFailed  = errors.New("recruitment adapter failed")
@@ -40,10 +43,11 @@ func (ExecCommandRunner) Run(ctx context.Context, binary string, args []string) 
 }
 
 type CLIAdapter struct {
-	Binary     string
-	ArgsPrefix []string
-	Timeout    time.Duration
-	Runner     CommandRunner
+	Binary        string
+	ArgsPrefix    []string
+	Timeout       time.Duration
+	StatusTimeout time.Duration
+	Runner        CommandRunner
 }
 
 type qtrecuritInboxSyncResult struct {
@@ -111,9 +115,10 @@ func NewCLIAdapter(binary string, timeout time.Duration) *CLIAdapter {
 		timeout = 60 * time.Second
 	}
 	return &CLIAdapter{
-		Binary:  binary,
-		Timeout: timeout,
-		Runner:  ExecCommandRunner{},
+		Binary:        binary,
+		Timeout:       timeout,
+		StatusTimeout: defaultProviderStatusTimeout,
+		Runner:        ExecCommandRunner{},
 	}
 }
 
@@ -172,9 +177,28 @@ func (a *CLIAdapter) FetchResume(ctx context.Context, candidate domain.Recruitme
 }
 
 func (a *CLIAdapter) CheckProviderStatus(ctx context.Context) domain.RecruitmentProviderStatus {
-	components := []domain.RecruitmentProviderStatusComponent{
-		a.checkQtrecurit(ctx),
-		a.checkMailbox(ctx),
+	statusTimeout := a.StatusTimeout
+	if statusTimeout <= 0 {
+		statusTimeout = defaultProviderStatusTimeout
+	}
+	statusCtx, cancel := context.WithTimeout(ctx, statusTimeout)
+	defer cancel()
+
+	componentResults := make(chan domain.RecruitmentProviderStatusComponent, 2)
+	go func() {
+		componentResults <- a.checkQtrecurit(statusCtx)
+	}()
+	go func() {
+		componentResults <- a.checkMailbox(statusCtx)
+	}()
+	components := make([]domain.RecruitmentProviderStatusComponent, 2)
+	for range components {
+		component := <-componentResults
+		if component.Name == "qtrecurit" {
+			components[0] = component
+		} else {
+			components[1] = component
+		}
 	}
 	ready := true
 	for _, component := range components {

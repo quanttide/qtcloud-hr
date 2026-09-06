@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/quanttide/qtcloud-human/src/provider/internal/domain"
 )
@@ -21,6 +22,13 @@ type fakeCommandOutput struct {
 	stdout string
 	stderr string
 	err    error
+}
+
+type blockingCommandRunner struct{}
+
+func (blockingCommandRunner) Run(ctx context.Context, binary string, args []string) (string, string, error) {
+	<-ctx.Done()
+	return "", "", ctx.Err()
 }
 
 func (f *fakeCommandRunner) Run(ctx context.Context, binary string, args []string) (string, string, error) {
@@ -382,5 +390,22 @@ func TestCheckProviderStatusReportsBlockedWhenMailboxFailsWithoutLeakingDetails(
 		if strings.Contains(serialized, leak) {
 			t.Fatalf("status leaked %q: %+v", leak, status)
 		}
+	}
+}
+
+func TestCheckProviderStatusBoundsSlowProviderProbe(t *testing.T) {
+	adapter := NewCLIAdapter("qtrecurit", time.Second)
+	adapter.StatusTimeout = 10 * time.Millisecond
+	adapter.Runner = blockingCommandRunner{}
+
+	start := time.Now()
+	status := adapter.CheckProviderStatus(context.Background())
+	elapsed := time.Since(start)
+
+	if status.Ready || status.Status != "blocked" {
+		t.Fatalf("unexpected status: %+v", status)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("provider status check exceeded bound: %s", elapsed)
 	}
 }
