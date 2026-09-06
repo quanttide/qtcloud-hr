@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## [0.1.4] - 2026-09-06
+
+### Fixed
+
+- 修复 FC OSS 凭证挂载 endpoint 未使用 URL 格式导致部署失败的问题，并兼容已有的裸 endpoint 配置。
+- 复用已预创建的 lark-cli 凭证 RAM 策略，避免部署 CI 身份缺少 `ram:ListTagResources` 时无法完成 Terraform Apply。
+
 ## [0.1.3] - 2026-09-06
 
 ### Added

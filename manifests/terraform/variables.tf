@@ -69,8 +69,14 @@ variable "lark_cli_credentials_oss_prefix" {
   default     = ""
 }
 
+variable "lark_cli_credentials_oss_policy_name" {
+  description = "可选：已预创建并授予 FC 角色使用凭证 OSS 前缀的 RAM 自定义策略名；留空则使用 <project>-<environment>-lark-cli-credentials"
+  type        = string
+  default     = ""
+}
+
 variable "lark_cli_credentials_oss_endpoint" {
   description = "可选：lark-cli 凭证 OSS mount endpoint"
   type        = string
-  default     = "oss-cn-hangzhou-internal.aliyuncs.com"
+  default     = "https://oss-cn-hangzhou-internal.aliyuncs.com"
 }

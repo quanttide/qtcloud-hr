@@ -8,4 +8,5 @@ allow_real_recruitment_actions = false
 qtrecurit_timeout_seconds      = 60
 lark_cli_credentials_oss_bucket   = ""
 lark_cli_credentials_oss_prefix   = ""
-lark_cli_credentials_oss_endpoint = "oss-cn-hangzhou-internal.aliyuncs.com"
+lark_cli_credentials_oss_policy_name = ""
+lark_cli_credentials_oss_endpoint = "https://oss-cn-hangzhou-internal.aliyuncs.com"

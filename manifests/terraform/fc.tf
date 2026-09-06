@@ -18,44 +18,9 @@ resource "alicloud_ram_role_policy_attachment" "fc_vpc" {
   role_name   = alicloud_ram_role.fc.role_name
 }
 
-resource "alicloud_ram_policy" "lark_cli_credentials" {
-  count       = local.lark_cli_credentials_mount_enabled ? 1 : 0
-  policy_name = "${local.app_name_prefix}-lark-cli-credentials"
-  description = "qtcloud-human provider lark-cli 凭证 OSS 前缀最小读写权限"
-  policy_document = jsonencode({
-    Version = "1"
-    Statement = [
-      {
-        Action   = ["oss:ListObjects"]
-        Effect   = "Allow"
-        Resource = ["acs:oss:*:*:${var.lark_cli_credentials_oss_bucket}"]
-        Condition = {
-          StringLike = {
-            "oss:Prefix" = [
-              local.lark_cli_credentials_oss_key_prefix,
-              "${local.lark_cli_credentials_oss_key_prefix}/*",
-            ]
-          }
-        }
-      },
-      {
-        Action = [
-          "oss:GetObject",
-          "oss:PutObject",
-          "oss:DeleteObject",
-          "oss:ListParts",
-          "oss:AbortMultipartUpload",
-        ]
-        Effect   = "Allow"
-        Resource = ["acs:oss:*:*:${var.lark_cli_credentials_oss_bucket}/${local.lark_cli_credentials_oss_key_prefix}/*"]
-      }
-    ]
-  })
-}
-
 resource "alicloud_ram_role_policy_attachment" "fc_lark_cli_credentials" {
   count       = local.lark_cli_credentials_mount_enabled ? 1 : 0
-  policy_name = alicloud_ram_policy.lark_cli_credentials[0].policy_name
+  policy_name = local.lark_cli_credentials_policy_name
   policy_type = "Custom"
   role_name   = alicloud_ram_role.fc.role_name
 }
@@ -102,7 +67,7 @@ resource "alicloud_fcv3_function" "this" {
       mount_points {
         bucket_name = var.lark_cli_credentials_oss_bucket
         bucket_path = local.lark_cli_credentials_bucket_path
-        endpoint    = var.lark_cli_credentials_oss_endpoint
+        endpoint    = local.lark_cli_credentials_mount_endpoint
         mount_dir   = "/home/app"
         read_only   = false
       }
