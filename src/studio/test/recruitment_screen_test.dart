@@ -198,7 +198,7 @@ void main() {
     expect(find.text('简历预览'), findsOneWidget);
   });
 
-  testWidgets('Recruitment page opens provider resume view for attachments', (
+  testWidgets('Recruitment page previews resume only after manual request', (
     tester,
   ) async {
     var requestedResumeView = false;
@@ -262,20 +262,21 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('张三-后端开发简历.pdf'), findsNWidgets(2));
-    expect(find.text('application/pdf · 已生成临时预览'), findsOneWidget);
-    expect(find.textContaining('PDF 已在下方内嵌预览'), findsOneWidget);
+    expect(requestedResumeView, isFalse);
+    expect(find.text('预览'), findsOneWidget);
+    expect(find.text('下载'), findsOneWidget);
 
-    await tester.tap(find.widgetWithText(OutlinedButton, '重新打开'));
+    await tester.tap(find.widgetWithText(OutlinedButton, '预览'));
     await tester.pumpAndSettle();
 
     expect(requestedResumeView, isTrue);
-    expect(find.textContaining('已打开简历预览'), findsOneWidget);
+    expect(find.textContaining('已生成简历预览'), findsOneWidget);
     expect(find.text('简历预览'), findsOneWidget);
     expect(find.text('张三-后端开发简历.pdf'), findsNWidgets(2));
     expect(find.textContaining('PDF 已在下方内嵌预览'), findsOneWidget);
   });
 
-  testWidgets('Recruitment page auto-opens the first resume attachment', (
+  testWidgets('Recruitment page does not auto-open the first resume attachment', (
     tester,
   ) async {
     var resumeViewRequests = 0;
@@ -337,10 +338,10 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(resumeViewRequests, 1);
-    expect(find.text('简历预览'), findsOneWidget);
-    expect(find.text('张三-后端开发简历.pdf'), findsNWidgets(2));
-    expect(find.textContaining('点击生成临时预览'), findsNothing);
+    expect(resumeViewRequests, 0);
+    expect(find.text('简历预览'), findsNothing);
+    expect(find.text('预览'), findsOneWidget);
+    expect(find.text('下载'), findsOneWidget);
   });
 
   testWidgets('Recruitment page sorts inbox by latest received time', (
