@@ -22,6 +22,7 @@ type fakeRecruitmentAdapter struct {
 	actions    []domain.RecruitmentAdapterActionCall
 	inboxSyncs []domain.RecruitmentInboxSyncRequest
 	resumes    []domain.RecruitmentResumeAttachment
+	status     domain.RecruitmentProviderStatus
 	resumePath string
 	err        error
 }
@@ -95,6 +96,21 @@ func (f *fakeRecruitmentAdapter) FetchResume(ctx context.Context, candidate doma
 		ContentType: attachment.ContentType,
 		SizeBytes:   7,
 	}, nil
+}
+
+func (f *fakeRecruitmentAdapter) CheckProviderStatus(ctx context.Context) domain.RecruitmentProviderStatus {
+	if f.status.Status != "" {
+		return f.status
+	}
+	return domain.RecruitmentProviderStatus{
+		Status:  "ready",
+		Ready:   true,
+		Mailbox: "hr@quanttide.com",
+		Components: []domain.RecruitmentProviderStatusComponent{
+			{Name: "qtrecurit", Status: "ok", Message: "qtrecurit 可执行"},
+			{Name: "hr_mailbox", Status: "ok", Message: "HR 邮箱可访问"},
+		},
+	}
 }
 
 func newRecruitmentTestServer(t *testing.T, adapter *fakeRecruitmentAdapter) (*httptest.Server, string) {
@@ -172,6 +188,66 @@ func TestRecruitmentReportEndpointCreatesDryRunReport(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "create_report") || strings.Contains(string(data), "QTRECURIT") {
 		t.Fatalf("audit log should contain action metadata only: %s", data)
+	}
+}
+
+func TestRecruitmentProviderStatusEndpointReturnsSanitizedDiagnostics(t *testing.T) {
+	adapter := &fakeRecruitmentAdapter{
+		status: domain.RecruitmentProviderStatus{
+			Status:  "blocked",
+			Ready:   false,
+			Mailbox: "hr@quanttide.com",
+			Message: "provider 环境未就绪",
+			Components: []domain.RecruitmentProviderStatusComponent{
+				{Name: "qtrecurit", Status: "ok", Message: "qtrecurit 可执行", Version: "qtrecurit 0.1.0"},
+				{Name: "hr_mailbox", Status: "failed", Message: "HR 邮箱认证态不可用"},
+			},
+		},
+	}
+	ts, _ := newRecruitmentTestServer(t, adapter)
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/recruitment/provider/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Operator", "tester")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var got domain.RecruitmentProviderStatus
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	if got.Ready || got.Status != "blocked" || got.Mailbox != "hr@quanttide.com" || len(got.Components) != 2 {
+		t.Fatalf("unexpected provider status: %+v", got)
+	}
+	serialized, _ := json.Marshal(got)
+	for _, leak := range []string{"token=", "authorization", "password", "mail body"} {
+		if strings.Contains(strings.ToLower(string(serialized)), leak) {
+			t.Fatalf("provider status leaked %q: %s", leak, serialized)
+		}
+	}
+}
+
+func TestRecruitmentProviderStatusRequiresOperator(t *testing.T) {
+	adapter := &fakeRecruitmentAdapter{}
+	ts, _ := newRecruitmentTestServer(t, adapter)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/v1/recruitment/provider/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.StatusCode)
 	}
 }
 

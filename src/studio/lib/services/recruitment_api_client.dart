@@ -248,6 +248,63 @@ class RecruitmentActionResult {
   }
 }
 
+class RecruitmentProviderStatusComponent {
+  const RecruitmentProviderStatusComponent({
+    required this.name,
+    required this.status,
+    required this.message,
+    this.version = '',
+  });
+
+  final String name;
+  final String status;
+  final String message;
+  final String version;
+
+  factory RecruitmentProviderStatusComponent.fromJson(
+    Map<String, dynamic> json,
+  ) {
+    return RecruitmentProviderStatusComponent(
+      name: (json['name'] as String?) ?? '',
+      status: (json['status'] as String?) ?? 'unknown',
+      message: (json['message'] as String?) ?? '',
+      version: (json['version'] as String?) ?? '',
+    );
+  }
+}
+
+class RecruitmentProviderStatus {
+  const RecruitmentProviderStatus({
+    required this.status,
+    required this.ready,
+    required this.mailbox,
+    required this.message,
+    required this.components,
+    this.checkedAt,
+  });
+
+  final String status;
+  final bool ready;
+  final String mailbox;
+  final String message;
+  final List<RecruitmentProviderStatusComponent> components;
+  final DateTime? checkedAt;
+
+  factory RecruitmentProviderStatus.fromJson(Map<String, dynamic> json) {
+    return RecruitmentProviderStatus(
+      status: (json['status'] as String?) ?? 'unknown',
+      ready: (json['ready'] as bool?) ?? false,
+      mailbox: (json['mailbox'] as String?) ?? '',
+      message: (json['message'] as String?) ?? '',
+      components: ((json['components'] as List<dynamic>?) ?? const [])
+          .cast<Map<String, dynamic>>()
+          .map(RecruitmentProviderStatusComponent.fromJson)
+          .toList(growable: false),
+      checkedAt: _parseRecruitmentTime(json['checked_at']),
+    );
+  }
+}
+
 class RecruitmentApiException implements Exception {
   const RecruitmentApiException(this.message);
 
@@ -315,6 +372,16 @@ class RecruitmentApiClient {
     );
   }
 
+  Future<RecruitmentProviderStatus> checkProviderStatus() async {
+    final response = await _httpClient.get(
+      _uri('/api/v1/recruitment/provider/status'),
+      headers: _headers(write: false),
+    );
+    return RecruitmentProviderStatus.fromJson(
+      _decodeResponse(response) as Map<String, dynamic>,
+    );
+  }
+
   Future<RecruitmentCandidate> updateCandidateStatus({
     required String candidateId,
     required String status,
@@ -364,10 +431,7 @@ class RecruitmentApiClient {
     if (decoded is! Map<String, dynamic>) {
       throw const RecruitmentApiException('招聘服务返回为空');
     }
-    return RecruitmentResumeView.fromJson(
-      decoded,
-      Uri.parse(baseUrl),
-    );
+    return RecruitmentResumeView.fromJson(decoded, Uri.parse(baseUrl));
   }
 
   Uri _uri(String path) => Uri.parse(baseUrl).resolve(path);

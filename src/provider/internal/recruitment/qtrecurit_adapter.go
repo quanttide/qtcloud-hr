@@ -16,6 +16,8 @@ import (
 	"github.com/quanttide/qtcloud-human/src/provider/internal/domain"
 )
 
+const defaultRecruitmentMailbox = "hr@quanttide.com"
+
 var (
 	ErrAdapterFailed  = errors.New("recruitment adapter failed")
 	ErrAdapterTimeout = errors.New("recruitment adapter timed out")
@@ -167,6 +169,67 @@ func (a *CLIAdapter) FetchResume(ctx context.Context, candidate domain.Recruitme
 		ContentType: decoded.ContentType,
 		SizeBytes:   decoded.SizeBytes,
 	}, nil
+}
+
+func (a *CLIAdapter) CheckProviderStatus(ctx context.Context) domain.RecruitmentProviderStatus {
+	components := []domain.RecruitmentProviderStatusComponent{
+		a.checkQtrecurit(ctx),
+		a.checkMailbox(ctx),
+	}
+	ready := true
+	for _, component := range components {
+		if component.Status != "ok" {
+			ready = false
+			break
+		}
+	}
+	status := "ready"
+	message := "provider 可执行 qtrecurit，并可访问 HR 邮箱"
+	if !ready {
+		status = "blocked"
+		message = "provider 环境未就绪，请检查 qtrecurit 二进制和 HR 邮箱认证态"
+	}
+	return domain.RecruitmentProviderStatus{
+		Status:     status,
+		Ready:      ready,
+		Mailbox:    defaultRecruitmentMailbox,
+		Message:    message,
+		Components: components,
+		CheckedAt:  time.Now().UTC(),
+	}
+}
+
+func (a *CLIAdapter) checkQtrecurit(ctx context.Context) domain.RecruitmentProviderStatusComponent {
+	stdout, _, err := a.runRaw(ctx, a.Binary, []string{"--version"})
+	if err != nil {
+		return domain.RecruitmentProviderStatusComponent{
+			Name:    "qtrecurit",
+			Status:  "failed",
+			Message: "qtrecurit 不可执行，请检查 provider 镜像是否包含二进制文件",
+		}
+	}
+	return domain.RecruitmentProviderStatusComponent{
+		Name:    "qtrecurit",
+		Status:  "ok",
+		Message: "qtrecurit 可执行",
+		Version: safeStatusLine(stdout),
+	}
+}
+
+func (a *CLIAdapter) checkMailbox(ctx context.Context) domain.RecruitmentProviderStatusComponent {
+	_, _, err := a.runRaw(ctx, "lark-cli", []string{"mail", "user_mailboxes", "profile", "--mailbox", defaultRecruitmentMailbox, "--format", "json"})
+	if err != nil {
+		return domain.RecruitmentProviderStatusComponent{
+			Name:    "hr_mailbox",
+			Status:  "failed",
+			Message: "HR 邮箱认证态不可用，请在 provider 运行环境配置 lark-cli 登录状态",
+		}
+	}
+	return domain.RecruitmentProviderStatusComponent{
+		Name:    "hr_mailbox",
+		Status:  "ok",
+		Message: "HR 邮箱可访问",
+	}
 }
 
 func (a *CLIAdapter) SyncInbox(ctx context.Context, req domain.RecruitmentInboxSyncRequest) (domain.RecruitmentAdapterInboxSyncResult, error) {
@@ -351,6 +414,12 @@ func parseQtrecuritTime(value string) (time.Time, error) {
 }
 
 func (a *CLIAdapter) run(parent context.Context, args []string) (string, string, error) {
+	commandArgs := append([]string{}, a.ArgsPrefix...)
+	commandArgs = append(commandArgs, args...)
+	return a.runRaw(parent, a.Binary, commandArgs)
+}
+
+func (a *CLIAdapter) runRaw(parent context.Context, binary string, args []string) (string, string, error) {
 	timeout := a.Timeout
 	if timeout <= 0 {
 		timeout = 60 * time.Second
@@ -361,9 +430,7 @@ func (a *CLIAdapter) run(parent context.Context, args []string) (string, string,
 	if runner == nil {
 		runner = ExecCommandRunner{}
 	}
-	commandArgs := append([]string{}, a.ArgsPrefix...)
-	commandArgs = append(commandArgs, args...)
-	stdout, stderr, err := runner.Run(ctx, a.Binary, commandArgs)
+	stdout, stderr, err := runner.Run(ctx, binary, args)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return "", "", ErrAdapterTimeout
 	}
@@ -401,7 +468,7 @@ func BuildInboxSyncArgs(req domain.RecruitmentInboxSyncRequest) []string {
 func BuildResumeArgs(candidate domain.RecruitmentCandidate, attachment domain.RecruitmentResumeAttachment) []string {
 	return []string{
 		"inbox", "resume",
-		"--mailbox", "hr@quanttide.com",
+		"--mailbox", defaultRecruitmentMailbox,
 		"--message-id", candidate.SourceMessageID,
 		"--attachment-id", attachment.SourceID,
 		"--file-name", attachment.FileName,
@@ -447,7 +514,7 @@ func stringParam(params map[string]any, key string) string {
 
 func inboxMailbox(req domain.RecruitmentInboxSyncRequest) string {
 	if strings.TrimSpace(req.Mailbox) == "" {
-		return "hr@quanttide.com"
+		return defaultRecruitmentMailbox
 	}
 	return req.Mailbox
 }
@@ -524,4 +591,12 @@ func DefaultTimeout() time.Duration {
 		}
 	}
 	return 60 * time.Second
+}
+
+func safeStatusLine(value string) string {
+	line := strings.TrimSpace(strings.Split(value, "\n")[0])
+	if len([]rune(line)) > 80 {
+		return string([]rune(line)[:80])
+	}
+	return line
 }

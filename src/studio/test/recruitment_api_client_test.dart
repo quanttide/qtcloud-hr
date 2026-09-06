@@ -251,6 +251,47 @@ void main() {
     expect(result.candidates, isEmpty);
   });
 
+  test('checkProviderStatus fetches sanitized provider diagnostics', () async {
+    final client = RecruitmentApiClient(
+      baseUrl: 'https://api.example.test',
+      operator: 'tester',
+      httpClient: MockClient((request) async {
+        expect(request.method, 'GET');
+        expect(request.url.path, '/api/v1/recruitment/provider/status');
+        expect(request.headers['X-Operator'], 'tester');
+        return jsonResponse({
+          'status': 'blocked',
+          'ready': false,
+          'mailbox': 'hr@quanttide.com',
+          'message': 'provider 环境未就绪',
+          'components': [
+            {
+              'name': 'qtrecurit',
+              'status': 'ok',
+              'message': 'qtrecurit 可执行',
+              'version': 'qtrecurit 0.1.0',
+            },
+            {
+              'name': 'hr_mailbox',
+              'status': 'failed',
+              'message': 'HR 邮箱认证态不可用',
+            },
+          ],
+          'checked_at': '2026-09-05T06:00:00Z',
+        }, 200);
+      }),
+    );
+
+    final status = await client.checkProviderStatus();
+
+    expect(status.ready, isFalse);
+    expect(status.status, 'blocked');
+    expect(status.mailbox, 'hr@quanttide.com');
+    expect(status.components, hasLength(2));
+    expect(status.components.first.version, 'qtrecurit 0.1.0');
+    expect(status.checkedAt, DateTime.utc(2026, 9, 5, 6));
+  });
+
   test('createResumeView requests a short-lived provider view URL', () async {
     final client = RecruitmentApiClient(
       baseUrl: 'https://api.example.test',

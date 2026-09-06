@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## [0.1.2] - 2026-09-06
+
+### Added
+
+- 新增招聘 provider 运行环境检测接口 `/api/v1/recruitment/provider/status`，用于确认 provider 容器内 `qtrecurit` CLI 和 HR 邮箱认证态是否可用。
+- 检测结果只返回脱敏的可用性、邮箱地址和组件状态，不暴露 token、认证详情、邮件正文或底层错误输出。
+
 ## [0.1.1] - 2026-09-05
 
 ### Fixed

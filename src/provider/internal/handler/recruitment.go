@@ -35,6 +35,7 @@ type RecruitmentAdapter interface {
 	SyncInbox(ctx context.Context, req domain.RecruitmentInboxSyncRequest) (domain.RecruitmentAdapterInboxSyncResult, error)
 	FetchResume(ctx context.Context, candidate domain.RecruitmentCandidate, attachment domain.RecruitmentResumeAttachment) (domain.RecruitmentAdapterResumeResult, error)
 	RunAction(ctx context.Context, candidate domain.RecruitmentCandidate, req domain.RecruitmentActionRequest) (domain.RecruitmentAdapterActionResult, error)
+	CheckProviderStatus(ctx context.Context) domain.RecruitmentProviderStatus
 }
 
 type resumeView struct {
@@ -80,6 +81,7 @@ func NewRecruitmentHandler(s *store.RecruitmentStore, adapter RecruitmentAdapter
 }
 
 func (h *RecruitmentHandler) RegisterRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/v1/recruitment/provider/status", h.ProviderStatus)
 	mux.HandleFunc("GET /api/v1/recruitment/candidates", h.ListCandidates)
 	mux.HandleFunc("POST /api/v1/recruitment/inbox/sync", h.SyncInbox)
 	mux.HandleFunc("POST /api/v1/recruitment/reports", h.CreateReport)
@@ -87,6 +89,14 @@ func (h *RecruitmentHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/recruitment/candidates/{candidate_id}/actions", h.RunCandidateAction)
 	mux.HandleFunc("POST /api/v1/recruitment/candidates/{candidate_id}/resume/{attachment_index}/view", h.CreateResumeView)
 	mux.HandleFunc("GET /api/v1/recruitment/resume-view/{token}", h.ServeResumeView)
+}
+
+func (h *RecruitmentHandler) ProviderStatus(w http.ResponseWriter, r *http.Request) {
+	if operator := operatorFromRequest(r); operator == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "operator required"})
+		return
+	}
+	writeJSON(w, http.StatusOK, h.adapter.CheckProviderStatus(r.Context()))
 }
 
 func (h *RecruitmentHandler) ListCandidates(w http.ResponseWriter, r *http.Request) {

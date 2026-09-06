@@ -554,4 +554,65 @@ void main() {
     expect(find.text('dry_run'), findsOneWidget);
     expect(find.textContaining('未配置 provider API'), findsOneWidget);
   });
+
+  testWidgets('Recruitment page can check provider CLI and mailbox status', (
+    tester,
+  ) async {
+    final client = RecruitmentApiClient(
+      baseUrl: 'https://api.example.test',
+      operator: 'tester',
+      httpClient: MockClient((request) async {
+        if (request.method == 'GET' &&
+            request.url.path == '/api/v1/recruitment/candidates') {
+          return http.Response.bytes(
+            utf8.encode(jsonEncode(candidatesJson())),
+            200,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          );
+        }
+        if (request.method == 'GET' &&
+            request.url.path == '/api/v1/recruitment/provider/status') {
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'status': 'blocked',
+                'ready': false,
+                'mailbox': 'hr@quanttide.com',
+                'message': 'provider 环境未就绪',
+                'components': [
+                  {
+                    'name': 'qtrecurit',
+                    'status': 'ok',
+                    'message': 'qtrecurit 可执行',
+                    'version': 'qtrecurit 0.1.0',
+                  },
+                  {
+                    'name': 'hr_mailbox',
+                    'status': 'failed',
+                    'message': 'HR 邮箱认证态不可用',
+                  },
+                ],
+                'checked_at': '2026-09-05T06:00:00Z',
+              }),
+            ),
+            200,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          );
+        }
+        return http.Response('not found', 404);
+      }),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: RecruitmentPage(apiClient: client)),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(OutlinedButton, '检测环境'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('provider 环境未就绪'), findsWidgets);
+    expect(find.textContaining('HR 邮箱认证态不可用'), findsOneWidget);
+    expect(find.textContaining('qtrecurit 0.1.0'), findsOneWidget);
+  });
 }

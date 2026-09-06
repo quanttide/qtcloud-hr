@@ -53,6 +53,22 @@ type RecruitmentResumeViewResult struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+type RecruitmentProviderStatus struct {
+	Status     string                               `json:"status"`
+	Ready      bool                                 `json:"ready"`
+	Mailbox    string                               `json:"mailbox"`
+	Message    string                               `json:"message"`
+	Components []RecruitmentProviderStatusComponent `json:"components"`
+	CheckedAt  time.Time                            `json:"checked_at"`
+}
+
+type RecruitmentProviderStatusComponent struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+	Version string `json:"version,omitempty"`
+}
+
 type RecruitmentReportRequest struct {
 	Days   *int    `json:"days,omitempty"`
 	Start  *string `json:"start,omitempty"`

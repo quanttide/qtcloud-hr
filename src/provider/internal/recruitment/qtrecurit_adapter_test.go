@@ -10,14 +10,27 @@ import (
 )
 
 type fakeCommandRunner struct {
+	stdout  string
+	stderr  string
+	err     error
+	args    []string
+	outputs map[string]fakeCommandOutput
+}
+
+type fakeCommandOutput struct {
 	stdout string
 	stderr string
 	err    error
-	args   []string
 }
 
 func (f *fakeCommandRunner) Run(ctx context.Context, binary string, args []string) (string, string, error) {
 	f.args = args
+	if f.outputs != nil {
+		key := binary + " " + strings.Join(args, " ")
+		if output, ok := f.outputs[key]; ok {
+			return output.stdout, output.stderr, output.err
+		}
+	}
 	return f.stdout, f.stderr, f.err
 }
 
@@ -317,5 +330,56 @@ func TestBuildActionArgsUsesWhitelistedStructuredArgs(t *testing.T) {
 				t.Fatalf("args = %#v, want %#v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCheckProviderStatusReportsReadyWhenCLIAndMailboxWork(t *testing.T) {
+	runner := &fakeCommandRunner{outputs: map[string]fakeCommandOutput{
+		"qtrecurit --version": {
+			stdout: "qtrecurit 0.1.0\n",
+		},
+		"lark-cli mail user_mailboxes profile --mailbox hr@quanttide.com --format json": {
+			stdout: `{"data":{"email":"hr@quanttide.com"}}`,
+		},
+	}}
+	adapter := NewCLIAdapter("qtrecurit", 0)
+	adapter.Runner = runner
+
+	status := adapter.CheckProviderStatus(context.Background())
+
+	if !status.Ready || status.Status != "ready" || status.Mailbox != "hr@quanttide.com" {
+		t.Fatalf("unexpected status: %+v", status)
+	}
+	if len(status.Components) != 2 || status.Components[0].Status != "ok" || status.Components[1].Status != "ok" {
+		t.Fatalf("unexpected components: %+v", status.Components)
+	}
+}
+
+func TestCheckProviderStatusReportsBlockedWhenMailboxFailsWithoutLeakingDetails(t *testing.T) {
+	runner := &fakeCommandRunner{outputs: map[string]fakeCommandOutput{
+		"qtrecurit --version": {
+			stdout: "qtrecurit 0.1.0\n",
+		},
+		"lark-cli mail user_mailboxes profile --mailbox hr@quanttide.com --format json": {
+			stderr: "token=secret mail body stack trace",
+			err:    ErrAdapterFailed,
+		},
+	}}
+	adapter := NewCLIAdapter("qtrecurit", 0)
+	adapter.Runner = runner
+
+	status := adapter.CheckProviderStatus(context.Background())
+
+	if status.Ready || status.Status != "blocked" {
+		t.Fatalf("unexpected status: %+v", status)
+	}
+	serialized := strings.ToLower(status.Message)
+	for _, component := range status.Components {
+		serialized += " " + strings.ToLower(component.Message)
+	}
+	for _, leak := range []string{"token=secret", "mail body", "stack trace"} {
+		if strings.Contains(serialized, leak) {
+			t.Fatalf("status leaked %q: %+v", leak, status)
+		}
 	}
 }

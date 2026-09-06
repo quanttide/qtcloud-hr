@@ -134,6 +134,7 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
   bool _dryRun = true;
   bool _reportLoading = false;
   bool _inboxSyncLoading = false;
+  bool _providerStatusLoading = false;
   int? _markingEmailId;
   String? _reportMarkdown;
   String? _reportStatus;
@@ -142,6 +143,7 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
   String? _openingAttachmentKey;
   String? _autoOpenedAttachmentKey;
   _ResumePreview? _resumePreview;
+  RecruitmentProviderStatus? _providerStatus;
   RecruitmentAction? _runningAction;
 
   @override
@@ -414,6 +416,40 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     }
   }
 
+  Future<void> _checkProviderStatus() async {
+    if (_apiClient == null) {
+      setState(() {
+        _lastActionError = '未配置 provider API，无法检测 provider 环境。';
+      });
+      return;
+    }
+    setState(() {
+      _providerStatusLoading = true;
+      _lastActionError = null;
+      _lastActionMessage = null;
+    });
+    try {
+      final status = await _apiClient.checkProviderStatus();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _providerStatus = status;
+        _lastActionMessage = status.ready
+            ? 'provider 环境可用：${status.mailbox}'
+            : 'provider 环境未就绪：${status.message}';
+      });
+    } on RecruitmentApiException catch (error) {
+      if (mounted) {
+        setState(() => _lastActionError = error.message);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _providerStatusLoading = false);
+      }
+    }
+  }
+
   Future<void> _runCandidateAction(
     Email email,
     RecruitmentAction action,
@@ -575,6 +611,22 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
               Padding(
                 padding: const EdgeInsets.only(right: 8),
                 child: OutlinedButton.icon(
+                  onPressed: _providerStatusLoading
+                      ? null
+                      : _checkProviderStatus,
+                  icon: _providerStatusLoading
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.health_and_safety_outlined, size: 18),
+                  label: Text(_providerStatusLoading ? '检测中' : '检测环境'),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: OutlinedButton.icon(
                   onPressed: _inboxSyncLoading ? null : _syncInbox,
                   icon: _inboxSyncLoading
                       ? const SizedBox(
@@ -623,6 +675,8 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
           return Column(
             children: [
               _buildStats(),
+              if (_providerStatus != null)
+                _buildProviderStatusBar(_providerStatus!),
               _buildFeedbackBar(),
               Expanded(
                 child: Row(
@@ -664,6 +718,60 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
         ),
       ),
     );
+  }
+
+  Widget _buildProviderStatusBar(RecruitmentProviderStatus status) {
+    final color = status.ready
+        ? const Color(0xFF166534)
+        : const Color(0xFF991B1B);
+    final bg = status.ready ? const Color(0xFFDCFCE7) : const Color(0xFFFEE2E2);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: bg,
+        border: Border(bottom: BorderSide(color: Colors.grey.shade300)),
+      ),
+      child: Wrap(
+        spacing: 10,
+        runSpacing: 6,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Icon(
+            status.ready ? Icons.check_circle_outline : Icons.error_outline,
+            size: 18,
+            color: color,
+          ),
+          Text(
+            status.ready ? 'provider 环境可用' : 'provider 环境未就绪',
+            style: TextStyle(color: color, fontWeight: FontWeight.w700),
+          ),
+          if (status.mailbox.isNotEmpty)
+            Text(
+              'HR 邮箱：${status.mailbox}',
+              style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+            ),
+          if (status.message.isNotEmpty)
+            Text(
+              status.message,
+              style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+            ),
+          ...status.components.map(_providerStatusChip),
+        ],
+      ),
+    );
+  }
+
+  Widget _providerStatusChip(RecruitmentProviderStatusComponent component) {
+    final ok = component.status == 'ok';
+    final bg = ok ? const Color(0xFFEFF6FF) : const Color(0xFFFFF1F2);
+    final fg = ok ? const Color(0xFF1E40AF) : const Color(0xFF991B1B);
+    final label = [
+      _providerComponentLabel(component.name),
+      if (component.version.isNotEmpty) component.version,
+      if (component.message.isNotEmpty) component.message,
+    ].join(' · ');
+    return _tag(label, bg, fg);
   }
 
   Widget _buildStats() {
@@ -1516,6 +1624,17 @@ bool _isPdfResume(String fileName, String contentType) {
   final lowerName = fileName.trim().toLowerCase();
   final lowerType = contentType.trim().toLowerCase();
   return lowerName.endsWith('.pdf') || lowerType == 'application/pdf';
+}
+
+String _providerComponentLabel(String name) {
+  switch (name) {
+    case 'qtrecurit':
+      return 'qtrecurit CLI';
+    case 'hr_mailbox':
+      return 'HR 邮箱认证';
+    default:
+      return name.isEmpty ? 'provider 检测项' : name;
+  }
 }
 
 String _defaultInterviewTime() {
