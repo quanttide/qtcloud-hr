@@ -18,7 +18,7 @@ import (
 
 const (
 	defaultRecruitmentMailbox    = "hr@quanttide.com"
-	defaultProviderStatusTimeout = 900 * time.Millisecond
+	defaultProviderStatusTimeout = 5 * time.Second
 )
 
 var (
