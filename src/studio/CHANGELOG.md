@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## [0.1.0-alpha.7] - 2026-09-06
+
+### Added
+
+- 新增统一认证登录页，招聘 API 使用当前登录用户的 Bearer Token。
+- 生产 API 基址支持 `api.quanttide.com/qtcloud-human` 网关前缀，简历预览链接保持网关路径。
+
 ## [0.1.0-alpha.6] - 2026-09-06
 
 ### Fixed

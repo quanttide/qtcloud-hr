@@ -180,8 +180,14 @@ class RecruitmentResumeView {
     if (rawUrl == null || rawUrl.trim().isEmpty) {
       throw const RecruitmentApiException('招聘服务返回为空');
     }
+    final resolvedUrl = rawUrl.startsWith('/')
+        ? baseUri.replace(
+            path:
+                '${baseUri.path.endsWith('/') ? baseUri.path.substring(0, baseUri.path.length - 1) : baseUri.path}$rawUrl',
+          )
+        : baseUri.resolve(rawUrl);
     return RecruitmentResumeView(
-      url: baseUri.resolve(rawUrl).toString(),
+      url: resolvedUrl.toString(),
       expiresAt: _parseRecruitmentTime(json['expires_at']),
     );
   }
@@ -317,12 +323,14 @@ class RecruitmentApiException implements Exception {
 class RecruitmentApiClient {
   RecruitmentApiClient({
     required this.baseUrl,
-    required this.operator,
+    this.operator = '',
+    this.accessToken = '',
     http.Client? httpClient,
   }) : _httpClient = httpClient ?? http.Client();
 
   final String baseUrl;
   final String operator;
+  final String accessToken;
   final http.Client _httpClient;
 
   Future<List<RecruitmentCandidate>> listCandidates() async {
@@ -434,14 +442,23 @@ class RecruitmentApiClient {
     return RecruitmentResumeView.fromJson(decoded, Uri.parse(baseUrl));
   }
 
-  Uri _uri(String path) => Uri.parse(baseUrl).resolve(path);
+  Uri _uri(String path) {
+    final base = Uri.parse(baseUrl);
+    final basePath = base.path.endsWith('/')
+        ? base.path.substring(0, base.path.length - 1)
+        : base.path;
+    final relativePath = path.startsWith('/') ? path.substring(1) : path;
+    return base.replace(path: '$basePath/$relativePath');
+  }
 
   Map<String, String> _headers({required bool write}) {
-    final headers = <String, String>{
-      'Content-Type': 'application/json',
-      'X-Operator': operator,
-    };
-    if (write) {
+    final headers = <String, String>{'Content-Type': 'application/json'};
+    if (accessToken.trim().isNotEmpty) {
+      headers['Authorization'] = 'Bearer ${accessToken.trim()}';
+    } else if (operator.trim().isNotEmpty) {
+      headers['X-Operator'] = operator;
+    }
+    if (write && accessToken.trim().isEmpty) {
       headers['X-Recruitment-Permission'] = 'write';
     }
     return headers;

@@ -51,6 +51,34 @@ variable "allow_real_recruitment_actions" {
   default     = false
 }
 
+variable "auth_userinfo_url" {
+  description = "统一认证服务 userinfo 地址，用于校验招聘 API 的 Bearer Token"
+  type        = string
+  default     = "https://api.quanttide.com/qtcloud-auth/userinfo"
+
+  validation {
+    condition     = can(regex("^https://", trimspace(var.auth_userinfo_url)))
+    error_message = "auth_userinfo_url must use HTTPS."
+  }
+}
+
+variable "recruitment_writers" {
+  description = "允许执行真实招聘写操作的统一认证用户 sub，逗号分隔"
+  type        = string
+  default     = ""
+}
+
+variable "gateway_shared_secret" {
+  description = "API 网关注入到 provider 的共享校验头；配置后可阻断 FC 直连招聘 API"
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = trimspace(var.gateway_shared_secret) != ""
+    error_message = "gateway_shared_secret must be configured; recruitment APIs must not be directly reachable without the gateway."
+  }
+}
+
 variable "qtrecurit_timeout_seconds" {
   description = "provider 调用 qtrecurit CLI 的超时时间（秒）"
   type        = number

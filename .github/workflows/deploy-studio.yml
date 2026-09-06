@@ -10,7 +10,7 @@
 #
 # 所需 GitHub secrets / variables（org / repo 级）：
 #   - ALIYUN_ACCESS_KEY_ID / ALIYUN_ACCESS_KEY_SECRET（secret）：RAM 用户 AccessKey（OSS 上传 + CDN 刷新）
-#   - QTCLOUD_HUMAN_API_BASE_URL（variable）：provider API 公网地址，例如 FC HTTP 触发器或 API 网关域名
+#   - QTCLOUD_HUMAN_API_BASE_URL（variable）：provider API 网关地址，生产使用 https://api.quanttide.com/qtcloud-human
 
 name: Deploy Studio
 
@@ -28,6 +28,7 @@ env:
   OSS_ENDPOINT: oss-cn-hangzhou.aliyuncs.com
   CDN_DOMAIN: human.cloud.quanttide.com
   PROVIDER_API_BASE_URL: ${{ vars.QTCLOUD_HUMAN_API_BASE_URL }}
+  AUTH_BASE_URL: ${{ vars.QTCLOUD_HUMAN_AUTH_BASE_URL || 'https://api.quanttide.com/qtcloud-auth' }}
 
 jobs:
   build-and-deploy:
@@ -55,7 +56,7 @@ jobs:
 
       - name: Build Web
         working-directory: src/studio
-        run: flutter build web --release --dart-define="QTCLOUD_HUMAN_API_BASE_URL=${PROVIDER_API_BASE_URL}"
+        run: flutter build web --release --dart-define="QTCLOUD_HUMAN_API_BASE_URL=${PROVIDER_API_BASE_URL}" --dart-define="QTCLOUD_AUTH_BASE_URL=${AUTH_BASE_URL}"
 
       - name: Setup ossutil
         uses: manyuanrong/setup-ossutil@v3.0

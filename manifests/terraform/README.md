@@ -20,7 +20,9 @@
 ## studio 客户端发布
 
 - 构建上传：`.github/workflows/deploy-studio.yml`（推送 tag `studio/*` 触发 → flutter build web → ossutil cp → 刷新 CDN）
-- 必需变量：GitHub variable `QTCLOUD_HUMAN_API_BASE_URL` 必须指向 provider API 公网地址，否则前端构建会失败，避免发布出无法调用后端的页面。
+- 必需变量：GitHub variable `QTCLOUD_HUMAN_API_BASE_URL` 必须指向 `https://api.quanttide.com/qtcloud-human` 网关地址，不得填写 FC HTTP 触发器直连地址。
+- provider 部署必须配置 GitHub secret `QTCLOUD_HUMAN_GATEWAY_SHARED_SECRET`；Terraform 会拒绝空值，避免招聘 API 绕过网关直连。
+- 统一认证用户可以各自登录；真实招聘写操作还需要把允许写入的认证用户 `sub` 放入 GitHub variable `QTCLOUD_HUMAN_RECRUITMENT_WRITERS`，逗号分隔。留空时所有用户只能读取，写操作返回 403。
 
 ## provider 服务端发布
 
@@ -32,15 +34,16 @@
 - `lark-cli` 登录态必须在 provider 生产运行环境内建立或通过生产安全凭证介质挂载，不要提交到 Git。`config.json` 只是 CLI 配置索引，不能替代 token / app secret 所在的 CLI 凭证存储。Windows 本地凭证使用 DPAPI/注册表，不能直接复制到 Linux FC；生产凭证应在 Linux/FC 等价环境重新授权，或改造为服务端直接调用飞书 OpenAPI。
 - 如通过 OSS 承载 provider 凭证目录，设置 GitHub repository variables `QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_BUCKET`、`QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_PREFIX`、可选的 `QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_ENDPOINT` 与可选的 `QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_POLICY_NAME` 后，部署 workflow 会传递 Terraform 变量 `lark_cli_credentials_oss_bucket`、`lark_cli_credentials_oss_prefix`、`lark_cli_credentials_oss_endpoint` 与 `lark_cli_credentials_oss_policy_name`。endpoint 可填写带或不带 `https://` 的地址，Terraform 会统一转换为 FC 要求的 HTTPS URL 格式。凭证 OSS 前缀所需的 RAM 自定义策略必须预先存在，默认名称为 `<project>-<environment>-lark-cli-credentials`，Terraform 只负责将该策略挂到 FC 角色；这样部署不依赖 CI 身份的 `ram:ListTagResources` 权限。Terraform 会把该前缀挂载到 `/home/app`，供 `lark-cli` 自动刷新用户 token。
 - provider 的候选人快照、qtrecurit 邮件/简历缓存、预览 token 和动作日志也写入同一私有 OSS 挂载目录，避免 FC 实例切换后出现 `candidate not found` 或简历预览失效；该前缀必须保持私有，不得用于静态站点或公开下载。
-- HTTP 触发器当前是匿名入口，`X-Operator` 只是开发期上下文，不能作为身份认证；在接入 API 网关或其他真实认证、并确认 FC 不能被绕过访问前，不得把 `QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS` 设为 `true`。
+- FC HTTP 触发器仍是匿名基础设施入口，但招聘路由已要求 API 网关注入的共享校验头；`X-Operator` 只保留给本地测试，不能作为身份认证。前端只能使用 API 网关地址，不能绕过网关访问 FC。
 - 手动 workflow `.github/workflows/bootstrap-lark-cli-credentials.yml` 可在 GitHub Linux runner 上生成 provider 可用凭证目录并上传到私有 OSS 前缀；运行前需配置 repository secret `QTCLOUD_HUMAN_LARK_CLI_APP_SECRET` 和 repository variable `QTCLOUD_HUMAN_LARK_CLI_APP_ID`。
 
 ## 前后端发布顺序
 
-1. 先推送 `provider/*` tag，等待 provider 镜像构建和 Terraform Apply 成功。
-2. 记录 `fc_http_url` 或后续 API 网关域名，写入 GitHub variable `QTCLOUD_HUMAN_API_BASE_URL`。
-3. 再推送 `studio/*` tag，构建时通过 `--dart-define=QTCLOUD_HUMAN_API_BASE_URL=...` 固化前端 API 地址。
-4. 发布后访问 `https://human.cloud.quanttide.com/`，用 dry-run 验证候选人列表、报告、收件箱同步和动作按钮。
+1. 先运行系统级 API 网关部署脚本，确认 `/qtcloud-human/api/v1/recruitment/*` 路由已发布。
+2. 设置 GitHub variable `QTCLOUD_HUMAN_API_BASE_URL=https://api.quanttide.com/qtcloud-human` 和 `QTCLOUD_HUMAN_AUTH_BASE_URL=https://api.quanttide.com/qtcloud-auth`。
+3. 推送 `provider/*` tag，等待 provider 镜像构建和 Terraform Apply 成功。
+4. 再推送 `studio/*` tag，构建时固化网关 API 地址和认证服务地址。
+5. 发布后访问 `https://human.cloud.quanttide.com/`，先用 dry-run 验证候选人列表、报告、收件箱同步和动作按钮。
 
 ## 真实招聘动作启用门禁
 

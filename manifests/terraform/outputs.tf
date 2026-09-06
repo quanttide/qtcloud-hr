@@ -9,6 +9,6 @@ output "fc_function_name" {
 }
 
 output "fc_http_url" {
-  description = "FC HTTP 触发器公网地址（系统级 API 网关接入前的直连入口）"
+  description = "FC HTTP 触发器公网地址（仅用于基础设施诊断；招聘 API 必须经 API 网关访问）"
   value       = try(alicloud_fcv3_trigger.http.http_trigger[0].url_internet, "尚未创建")
 }

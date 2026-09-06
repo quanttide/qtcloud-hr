@@ -117,7 +117,7 @@ func TestWithCORSAllowsConfiguredLocalFrontend(t *testing.T) {
 	if got := recorder.Header().Get("Access-Control-Allow-Origin"); got != "http://127.0.0.1:5080" {
 		t.Fatalf("allow origin = %q", got)
 	}
-	if got := recorder.Header().Get("Access-Control-Allow-Headers"); got != "Content-Type, X-Operator, X-Recruitment-Permission" {
+	if got := recorder.Header().Get("Access-Control-Allow-Headers"); got != "Content-Type, Authorization, X-Operator, X-Recruitment-Permission" {
 		t.Fatalf("allow headers = %q", got)
 	}
 	if got := recorder.Header().Get("Access-Control-Allow-Methods"); got != "GET, POST, PUT, PATCH, DELETE, OPTIONS" {

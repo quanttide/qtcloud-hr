@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/quanttide/qtcloud-human/src/provider/internal/auth"
 	"github.com/quanttide/qtcloud-human/src/provider/internal/domain"
 	"github.com/quanttide/qtcloud-human/src/provider/internal/recruitment"
 	"github.com/quanttide/qtcloud-human/src/provider/internal/store"
@@ -52,6 +54,9 @@ type RecruitmentHandlerConfig struct {
 	AllowRealActions    bool
 	ResumeCacheRoot     string
 	ResumeViewStatePath string
+	Authenticator       auth.UserInfoAuthorizer
+	RecruitmentWriters  []string
+	GatewaySecret       string
 }
 
 type RecruitmentHandler struct {
@@ -62,6 +67,9 @@ type RecruitmentHandler struct {
 	allowRealActions    bool
 	resumeCacheRoot     string
 	resumeViewStatePath string
+	authenticator       auth.UserInfoAuthorizer
+	recruitmentWriters  map[string]bool
+	gatewaySecret       string
 	resumeViews         map[string]resumeView
 	resumeViewMu        sync.Mutex
 }
@@ -73,6 +81,13 @@ func NewRecruitmentHandler(s *store.RecruitmentStore, adapter RecruitmentAdapter
 	if audit == nil {
 		audit = recruitment.SlogAuditLogger{}
 	}
+	writers := make(map[string]bool, len(config.RecruitmentWriters))
+	for _, writer := range config.RecruitmentWriters {
+		writer = strings.TrimSpace(writer)
+		if writer != "" {
+			writers[writer] = true
+		}
+	}
 	return &RecruitmentHandler{
 		store:               s,
 		adapter:             adapter,
@@ -81,6 +96,9 @@ func NewRecruitmentHandler(s *store.RecruitmentStore, adapter RecruitmentAdapter
 		allowRealActions:    config.AllowRealActions,
 		resumeCacheRoot:     cleanOptionalAbsPath(config.ResumeCacheRoot),
 		resumeViewStatePath: cleanOptionalAbsPath(config.ResumeViewStatePath),
+		authenticator:       config.Authenticator,
+		recruitmentWriters:  writers,
+		gatewaySecret:       strings.TrimSpace(config.GatewaySecret),
 		resumeViews:         map[string]resumeView{},
 	}
 }
@@ -97,25 +115,22 @@ func (h *RecruitmentHandler) RegisterRoutes(mux *http.ServeMux) {
 }
 
 func (h *RecruitmentHandler) ProviderStatus(w http.ResponseWriter, r *http.Request) {
-	if operator := operatorFromRequest(r); operator == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "operator required"})
+	if _, ok := h.authenticate(w, r, false); !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, h.adapter.CheckProviderStatus(r.Context()))
 }
 
 func (h *RecruitmentHandler) ListCandidates(w http.ResponseWriter, r *http.Request) {
-	if operator := operatorFromRequest(r); operator == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "operator required"})
+	if _, ok := h.authenticate(w, r, false); !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, h.store.ListCandidates())
 }
 
 func (h *RecruitmentHandler) CreateReport(w http.ResponseWriter, r *http.Request) {
-	operator := operatorFromRequest(r)
-	if operator == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "operator required"})
+	operator, ok := h.authenticate(w, r, false)
+	if !ok {
 		return
 	}
 	var req domain.RecruitmentReportRequest
@@ -170,13 +185,8 @@ func (h *RecruitmentHandler) CreateReport(w http.ResponseWriter, r *http.Request
 }
 
 func (h *RecruitmentHandler) SyncInbox(w http.ResponseWriter, r *http.Request) {
-	operator := operatorFromRequest(r)
-	if operator == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "operator required"})
-		return
-	}
-	if !canWriteRecruitment(r) {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "recruitment write permission required"})
+	operator, ok := h.authenticate(w, r, true)
+	if !ok {
 		return
 	}
 	var req domain.RecruitmentInboxSyncRequest
@@ -238,13 +248,8 @@ func (h *RecruitmentHandler) SyncInbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *RecruitmentHandler) UpdateCandidateStatus(w http.ResponseWriter, r *http.Request) {
-	operator := operatorFromRequest(r)
-	if operator == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "operator required"})
-		return
-	}
-	if !canWriteRecruitment(r) {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "recruitment write permission required"})
+	operator, ok := h.authenticate(w, r, true)
+	if !ok {
 		return
 	}
 	var req domain.RecruitmentCandidateStatusUpdateRequest
@@ -275,13 +280,8 @@ func (h *RecruitmentHandler) UpdateCandidateStatus(w http.ResponseWriter, r *htt
 }
 
 func (h *RecruitmentHandler) RunCandidateAction(w http.ResponseWriter, r *http.Request) {
-	operator := operatorFromRequest(r)
-	if operator == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "operator required"})
-		return
-	}
-	if !canWriteRecruitment(r) {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "recruitment write permission required"})
+	operator, ok := h.authenticate(w, r, true)
+	if !ok {
 		return
 	}
 	candidateID := r.PathValue("candidate_id")
@@ -348,9 +348,7 @@ func (h *RecruitmentHandler) RunCandidateAction(w http.ResponseWriter, r *http.R
 }
 
 func (h *RecruitmentHandler) CreateResumeView(w http.ResponseWriter, r *http.Request) {
-	operator := operatorFromRequest(r)
-	if operator == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "operator required"})
+	if _, ok := h.authenticate(w, r, false); !ok {
 		return
 	}
 	if !h.allowRealActions {
@@ -413,6 +411,10 @@ func (h *RecruitmentHandler) CreateResumeView(w http.ResponseWriter, r *http.Req
 }
 
 func (h *RecruitmentHandler) ServeResumeView(w http.ResponseWriter, r *http.Request) {
+	if !h.gatewaySecretMatches(r) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "gateway required"})
+		return
+	}
 	token := strings.TrimSpace(r.PathValue("token"))
 	if token == "" {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "resume view not found"})
@@ -446,6 +448,48 @@ func (h *RecruitmentHandler) ServeResumeView(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeFile(w, r, view.Path)
+}
+
+func (h *RecruitmentHandler) authenticate(w http.ResponseWriter, r *http.Request, requireWrite bool) (string, bool) {
+	if !h.gatewaySecretMatches(r) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "gateway required"})
+		return "", false
+	}
+
+	operator := ""
+	if h.authenticator != nil {
+		principal, err := h.authenticator.Authorize(r.Context(), r.Header.Get("Authorization"))
+		if err != nil || strings.TrimSpace(principal.Subject) == "" {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+			return "", false
+		}
+		operator = principal.Subject
+		if requireWrite && !h.recruitmentWriters[operator] {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "recruitment write permission required"})
+			return "", false
+		}
+		return operator, true
+	}
+
+	operator = operatorFromRequest(r)
+	if operator == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "operator required"})
+		return "", false
+	}
+	if requireWrite && !canWriteRecruitment(r) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "recruitment write permission required"})
+		return "", false
+	}
+	return operator, true
+}
+
+func (h *RecruitmentHandler) gatewaySecretMatches(r *http.Request) bool {
+	if h.gatewaySecret == "" {
+		return true
+	}
+	actual := []byte(r.Header.Get("X-Qtcloud-Gateway-Secret"))
+	expected := []byte(h.gatewaySecret)
+	return len(actual) == len(expected) && subtle.ConstantTimeCompare(actual, expected) == 1
 }
 
 func (h *RecruitmentHandler) resumeAttachmentFromRequest(w http.ResponseWriter, r *http.Request) (domain.RecruitmentCandidate, domain.RecruitmentResumeAttachment, bool) {

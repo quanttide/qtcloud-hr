@@ -5,7 +5,9 @@ void main() {
   testWidgets('Workbench renders with navigation rail', (
     WidgetTester tester,
   ) async {
-    await tester.pumpWidget(const WorkbenchApp());
+    await tester.pumpWidget(
+      const WorkbenchApp(initialAccessToken: 'test-access-token'),
+    );
 
     // 侧边导航栏：总览为主页（导航 label + 页面标题各一处）
     expect(find.text('总览'), findsNWidgets(2));

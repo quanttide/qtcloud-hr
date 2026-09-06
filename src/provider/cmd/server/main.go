@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/quanttide/qtcloud-human/src/provider/internal/auth"
 	"github.com/quanttide/qtcloud-human/src/provider/internal/handler"
 	"github.com/quanttide/qtcloud-human/src/provider/internal/recruitment"
 	"github.com/quanttide/qtcloud-human/src/provider/internal/store"
@@ -29,11 +31,21 @@ func main() {
 	adapter := recruitment.NewCLIAdapter(recruitment.DefaultBinary(), recruitment.DefaultTimeout())
 	adapter.ArgsPrefix = recruitment.DefaultArgsPrefix()
 	audit := recruitment.NewFileAuditLogger(os.Getenv("QTCLOUD_HUMAN_ACTION_LOG_DIR"))
+	userInfoAuthorizer, err := auth.NewRemoteUserInfoAuthorizer(
+		os.Getenv("QTCLOUD_HUMAN_AUTH_USERINFO_URL"),
+		&http.Client{Timeout: 10 * time.Second},
+	)
+	if err != nil {
+		log.Fatalf("configure recruitment authentication: %v", err)
+	}
 	rh := handler.NewRecruitmentHandler(rs, adapter, audit, handler.RecruitmentHandlerConfig{
 		DryRunDefault:       dryRunDefault(),
 		AllowRealActions:    allowRealRecruitmentActions(),
 		ResumeCacheRoot:     recruitmentResumeCacheRoot(),
 		ResumeViewStatePath: os.Getenv("QTCLOUD_HUMAN_RESUME_VIEW_STATE_PATH"),
+		Authenticator:       userInfoAuthorizer,
+		RecruitmentWriters:  recruitmentWriters(),
+		GatewaySecret:       os.Getenv("QTCLOUD_HUMAN_GATEWAY_SHARED_SECRET"),
 	})
 
 	mux := http.NewServeMux()
@@ -107,10 +119,22 @@ func allowRealRecruitmentActions() bool {
 	return err == nil && parsed
 }
 
+func recruitmentWriters() []string {
+	var writers []string
+	for _, value := range strings.Split(os.Getenv("QTCLOUD_HUMAN_RECRUITMENT_WRITERS"), ",") {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			writers = append(writers, value)
+		}
+	}
+	return writers
+}
+
 func corsOrigins() []string {
 	value := os.Getenv("QTCLOUD_HUMAN_CORS_ORIGINS")
 	if value == "" {
 		return []string{
+			"https://human.cloud.quanttide.com",
 			"http://127.0.0.1:5080",
 			"http://localhost:5080",
 			"http://127.0.0.1:5081",
@@ -142,7 +166,7 @@ func withCORS(next http.Handler, allowedOrigins []string) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Operator, X-Recruitment-Permission")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Operator, X-Recruitment-Permission")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

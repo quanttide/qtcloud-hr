@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quanttide/qtcloud-human/src/provider/internal/auth"
 	"github.com/quanttide/qtcloud-human/src/provider/internal/domain"
 	"github.com/quanttide/qtcloud-human/src/provider/internal/recruitment"
 	"github.com/quanttide/qtcloud-human/src/provider/internal/store"
@@ -26,6 +27,18 @@ type fakeRecruitmentAdapter struct {
 	status     domain.RecruitmentProviderStatus
 	resumePath string
 	err        error
+}
+
+type fakeUserInfoAuthorizer struct {
+	principal auth.Principal
+	err       error
+}
+
+func (f fakeUserInfoAuthorizer) Authorize(context.Context, string) (auth.Principal, error) {
+	if f.err != nil {
+		return auth.Principal{}, f.err
+	}
+	return f.principal, nil
 }
 
 func (f *fakeRecruitmentAdapter) CreateReport(ctx context.Context, req domain.RecruitmentReportRequest) (domain.RecruitmentAdapterReportResult, error) {
@@ -249,6 +262,120 @@ func TestRecruitmentProviderStatusRequiresOperator(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	}
+}
+
+func TestRecruitmentAuthenticatorRejectsLegacyHeaders(t *testing.T) {
+	adapter := &fakeRecruitmentAdapter{}
+	ts, _ := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{
+		Authenticator: fakeUserInfoAuthorizer{
+			principal: auth.Principal{Subject: "user-001"},
+		},
+	})
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/recruitment/candidates", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Operator", "spoofed")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected authenticated request to succeed, got %d", resp.StatusCode)
+	}
+}
+
+func TestRecruitmentAuthenticatorControlsWritePermission(t *testing.T) {
+	adapter := &fakeRecruitmentAdapter{}
+	ts, _ := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{
+		Authenticator: fakeUserInfoAuthorizer{
+			principal: auth.Principal{Subject: "user-readonly"},
+		},
+		RecruitmentWriters: []string{"user-writer"},
+	})
+	defer ts.Close()
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		ts.URL+"/api/v1/recruitment/inbox/sync",
+		strings.NewReader(`{"mailbox":"hr@quanttide.com","folder":"INBOX","page_size":25,"dry_run":true}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer readonly-token")
+	req.Header.Set("X-Recruitment-Permission", "write")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected readonly principal to be rejected, got %d", resp.StatusCode)
+	}
+	if len(adapter.inboxSyncs) != 0 {
+		t.Fatalf("adapter should not be called for readonly principal")
+	}
+}
+
+func TestRecruitmentGatewaySecretBlocksDirectAccess(t *testing.T) {
+	adapter := &fakeRecruitmentAdapter{}
+	ts, _ := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{
+		GatewaySecret: "gateway-secret",
+	})
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/recruitment/candidates", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Operator", "tester")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected direct access to be rejected, got %d", resp.StatusCode)
+	}
+
+	reqWithGateway, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/recruitment/candidates", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqWithGateway.Header.Set("X-Operator", "tester")
+	reqWithGateway.Header.Set("X-Qtcloud-Gateway-Secret", "gateway-secret")
+	allowedResp, err := http.DefaultClient.Do(reqWithGateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer allowedResp.Body.Close()
+	if allowedResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected gateway request to succeed, got %d", allowedResp.StatusCode)
+	}
+}
+
+func TestRecruitmentGatewaySecretProtectsResumeView(t *testing.T) {
+	adapter := &fakeRecruitmentAdapter{}
+	ts, _ := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{
+		GatewaySecret: "gateway-secret",
+	})
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/v1/recruitment/resume-view/token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected direct resume access to be rejected, got %d", resp.StatusCode)
 	}
 }
 

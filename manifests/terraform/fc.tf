@@ -62,6 +62,9 @@ resource "alicloud_fcv3_function" "this" {
     QTCLOUD_HUMAN_RECRUITMENT_STATE_PATH         = "/home/app/.qtcloud-human/state/recruitment-candidates.json"
     QTCLOUD_HUMAN_RESUME_VIEW_STATE_PATH         = "/home/app/.qtcloud-human/state/resume-views.json"
     QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS = tostring(var.allow_real_recruitment_actions)
+    QTCLOUD_HUMAN_AUTH_USERINFO_URL             = var.auth_userinfo_url
+    QTCLOUD_HUMAN_RECRUITMENT_WRITERS           = var.recruitment_writers
+    QTCLOUD_HUMAN_GATEWAY_SHARED_SECRET         = var.gateway_shared_secret
     QTCLOUD_HUMAN_CORS_ORIGINS                   = var.cors_origins
     QTRECURIT_BIN                                = "/usr/local/bin/qtrecurit"
     QTRECURIT_DRY_RUN_DEFAULT                    = tostring(var.qtrecurit_dry_run_default)

@@ -24,6 +24,9 @@ env:
   TF_VAR_qtrecurit_dry_run_default: "true"
   # 默认保持真实招聘动作关闭；只有仓库变量显式设为 true 时才打开。
   TF_VAR_allow_real_recruitment_actions: ${{ vars.QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS == 'true' && 'true' || 'false' }}
+  TF_VAR_auth_userinfo_url: ${{ vars.QTCLOUD_HUMAN_AUTH_USERINFO_URL || 'https://api.quanttide.com/qtcloud-auth/userinfo' }}
+  TF_VAR_recruitment_writers: ${{ vars.QTCLOUD_HUMAN_RECRUITMENT_WRITERS || '' }}
+  TF_VAR_gateway_shared_secret: ${{ secrets.QTCLOUD_HUMAN_GATEWAY_SHARED_SECRET || '' }}
   # 可选：生产 lark-cli 用户认证态 OSS 挂载。未配置 bucket/prefix 时 Terraform 不挂载。
   TF_VAR_lark_cli_credentials_oss_bucket: ${{ vars.QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_BUCKET || '' }}
   TF_VAR_lark_cli_credentials_oss_prefix: ${{ vars.QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_PREFIX || '' }}
@@ -92,6 +95,15 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME#provider/}"
           echo "TF_VAR_image=${{ secrets.ALIYUN_ACR_REGISTRY }}/${ACR_NAMESPACE}/qtcloud-human-provider:${TAG}" >> "$GITHUB_ENV"
+
+      - name: Validate Recruitment Gateway Secret
+        env:
+          GATEWAY_SECRET: ${{ secrets.QTCLOUD_HUMAN_GATEWAY_SHARED_SECRET }}
+        run: |
+          if [ -z "$GATEWAY_SECRET" ]; then
+            echo "QTCLOUD_HUMAN_GATEWAY_SHARED_SECRET is required." >&2
+            exit 1
+          fi
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3

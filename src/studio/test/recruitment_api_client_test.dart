@@ -63,6 +63,59 @@ void main() {
   });
 
   test(
+    'authenticated client sends bearer token and preserves gateway path',
+    () async {
+      final client = RecruitmentApiClient(
+        baseUrl: 'https://api.example.test/qtcloud-human',
+        accessToken: 'access-token',
+        httpClient: MockClient((request) async {
+          expect(
+            request.url.path,
+            '/qtcloud-human/api/v1/recruitment/candidates',
+          );
+          expect(request.headers['Authorization'], 'Bearer access-token');
+          expect(request.headers.containsKey('X-Operator'), isFalse);
+          return jsonResponse([
+            {
+              'id': 'cand_001',
+              'name': '张三',
+              'email': 'zhangsan@example.com',
+              'stage': 'new',
+              'status': 'pending',
+              'has_resume': false,
+              'has_cover_letter': false,
+            },
+          ], 200);
+        }),
+      );
+
+      await client.listCandidates();
+    },
+  );
+
+  test('resume view keeps gateway prefix for absolute API paths', () async {
+    final client = RecruitmentApiClient(
+      baseUrl: 'https://api.example.test/qtcloud-human',
+      accessToken: 'access-token',
+      httpClient: MockClient((request) async {
+        return jsonResponse({
+          'url': '/api/v1/recruitment/resume-view/token',
+          'expires_at': '2026-09-06T00:00:00Z',
+        }, 201);
+      }),
+    );
+
+    final view = await client.createResumeView(
+      candidateId: 'cand_001',
+      attachmentIndex: 0,
+    );
+    expect(
+      view.url,
+      'https://api.example.test/qtcloud-human/api/v1/recruitment/resume-view/token',
+    );
+  });
+
+  test(
     'listCandidates falls back to updated_at when received_at is missing',
     () async {
       final client = RecruitmentApiClient(
