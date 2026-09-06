@@ -141,7 +141,6 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
   String? _lastActionMessage;
   String? _lastActionError;
   String? _openingAttachmentKey;
-  String? _autoOpenedAttachmentKey;
   _ResumePreview? _resumePreview;
   RecruitmentProviderStatus? _providerStatus;
   RecruitmentAction? _runningAction;
@@ -182,7 +181,6 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     _emails = emails;
     _emailsInitialized = true;
     _selectFirstVisibleEmail();
-    _scheduleAutoOpenSelectedResume();
   }
 
   List<Email> _emailsFromCandidates(List<RecruitmentCandidate> candidates) {
@@ -261,7 +259,6 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     if (!selectedIsVisible) {
       _selectedId = visibleEmails.isNotEmpty ? visibleEmails.first.id : null;
       _resumePreview = null;
-      _autoOpenedAttachmentKey = null;
     }
     _syncInterviewInputs(_selected);
   }
@@ -311,36 +308,9 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     setState(() {
       _selectedId = email.id;
       _resumePreview = null;
-      _autoOpenedAttachmentKey = null;
+      _lastActionError = null;
+      _lastActionMessage = null;
       _syncInterviewInputs(email);
-    });
-    _scheduleAutoOpenSelectedResume();
-  }
-
-  void _scheduleAutoOpenSelectedResume() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) {
-        return;
-      }
-      final email = _selected;
-      if (email == null || email.resumeAttachments.isEmpty) {
-        return;
-      }
-      final key = _attachmentKey(email, 0);
-      if (_resumePreview?.key == key ||
-          _openingAttachmentKey == key ||
-          _autoOpenedAttachmentKey == key) {
-        return;
-      }
-      _autoOpenedAttachmentKey = key;
-      unawaited(
-        _loadResumeAttachment(
-          email,
-          0,
-          email.resumeAttachments.first,
-          openExternal: false,
-        ),
-      );
     });
   }
 
@@ -485,7 +455,7 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     }
   }
 
-  Future<void> _openResumeAttachment(
+  Future<void> _previewResumeAttachment(
     Email email,
     int attachmentIndex,
     RecruitmentResumeAttachment attachment,
@@ -494,7 +464,34 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
       email,
       attachmentIndex,
       attachment,
-      openExternal: true,
+      openDownload: false,
+    );
+  }
+
+  Future<void> _downloadResumeAttachment(
+    Email email,
+    int attachmentIndex,
+    RecruitmentResumeAttachment attachment,
+  ) async {
+    final key = _attachmentKey(email, attachmentIndex);
+    final preview = _resumePreview;
+    if (preview?.key == key &&
+        (preview?.expiresAt == null ||
+            preview!.expiresAt!.isAfter(DateTime.now().toUtc()))) {
+      openBrowserUrl(_downloadUrl(preview!.url));
+      if (mounted) {
+        setState(() {
+          _lastActionMessage = '已开始下载：${attachment.fileName}';
+          _lastActionError = null;
+        });
+      }
+      return;
+    }
+    await _loadResumeAttachment(
+      email,
+      attachmentIndex,
+      attachment,
+      openDownload: true,
     );
   }
 
@@ -502,7 +499,7 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     Email email,
     int attachmentIndex,
     RecruitmentResumeAttachment attachment, {
-    required bool openExternal,
+    required bool openDownload,
   }) async {
     if (_apiClient == null) {
       setState(() {
@@ -522,10 +519,12 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
         candidateId: email.candidateId,
         attachmentIndex: attachmentIndex,
       );
-      if (openExternal) {
-        openBrowserUrl(view.url);
+      if (openDownload) {
+        openBrowserUrl(_downloadUrl(view.url));
         unawaited(
-          Clipboard.setData(ClipboardData(text: view.url)).catchError((_) {}),
+          Clipboard.setData(
+            ClipboardData(text: _downloadUrl(view.url)),
+          ).catchError((_) {}),
         );
       }
       if (!mounted) {
@@ -539,9 +538,9 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
           url: view.url,
           expiresAt: view.expiresAt,
         );
-        _lastActionMessage = openExternal
-            ? '已打开简历预览，并复制临时链接：${attachment.fileName}'
-            : '已加载简历预览：${attachment.fileName}';
+        _lastActionMessage = openDownload
+            ? '已开始下载，并复制临时下载链接：${attachment.fileName}'
+            : '已生成简历预览：${attachment.fileName}';
       });
     } on RecruitmentApiException catch (error) {
       if (mounted) {
@@ -552,6 +551,18 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
         setState(() => _openingAttachmentKey = null);
       }
     }
+  }
+
+  String _downloadUrl(String url) {
+    final uri = Uri.parse(url);
+    return uri
+        .replace(
+          queryParameters: <String, String>{
+            ...uri.queryParameters,
+            'download': '1',
+          },
+        )
+        .toString();
   }
 
   Map<String, Object?> _paramsForAction(Email email, RecruitmentAction action) {
@@ -670,7 +681,6 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
           if (!_emailsInitialized) {
             _emails = snapshot.data!;
             _emailsInitialized = true;
-            _scheduleAutoOpenSelectedResume();
           }
           return Column(
             children: [
@@ -1148,56 +1158,53 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     final previewReady = _resumePreview?.key == key;
     return Padding(
       padding: const EdgeInsets.only(top: 6),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(6),
-        onTap: opening
-            ? null
-            : () => _openResumeAttachment(email, attachmentIndex, attachment),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Row(
-            children: [
-              Icon(
-                _attachmentIcon(attachment),
-                size: 18,
-                color: Colors.grey.shade600,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      attachment.fileName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    Text(
-                      _attachmentMeta(
-                        attachment,
-                        opening: opening,
-                        previewReady: previewReady,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey.shade600,
-                      ),
-                    ),
-                  ],
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            _attachmentIcon(attachment),
+            size: 18,
+            color: Colors.grey.shade600,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  attachment.fileName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
+                Text(
+                  _attachmentMeta(
+                    attachment,
+                    opening: opening,
+                    previewReady: previewReady,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Wrap(
+            spacing: 6,
+            children: [
               OutlinedButton.icon(
                 onPressed: opening
                     ? null
-                    : () =>
-                          _openResumeAttachment(email, attachmentIndex, attachment),
+                    : () => _previewResumeAttachment(
+                        email,
+                        attachmentIndex,
+                        attachment,
+                      ),
                 icon: opening
                     ? const SizedBox(
                         width: 16,
@@ -1205,16 +1212,27 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : Icon(
-                        previewReady ? Icons.refresh : Icons.open_in_new,
+                        previewReady
+                            ? Icons.refresh
+                            : Icons.visibility_outlined,
                         size: 16,
                       ),
-                label: Text(
-                  opening ? '打开中' : (previewReady ? '重新打开' : '打开简历'),
-                ),
+                label: Text(opening ? '处理中' : (previewReady ? '重新预览' : '预览')),
+              ),
+              OutlinedButton.icon(
+                onPressed: opening
+                    ? null
+                    : () => _downloadResumeAttachment(
+                        email,
+                        attachmentIndex,
+                        attachment,
+                      ),
+                icon: const Icon(Icons.download_outlined, size: 16),
+                label: const Text('下载'),
               ),
             ],
           ),
-        ),
+        ],
       ),
     );
   }
@@ -1239,11 +1257,11 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
       if (attachment.contentType.isNotEmpty) attachment.contentType,
       if (attachment.sizeBytes != null) _formatBytes(attachment.sizeBytes!),
       if (opening)
-        '正在生成预览'
+        '正在处理附件'
       else if (previewReady)
-        '已生成临时预览'
+        '已生成临时预览，可手动下载'
       else
-        '自动生成预览中，可点击打开',
+        '点击预览或下载',
     ];
     return parts.join(' · ');
   }
@@ -1283,15 +1301,17 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
                 ),
               ),
               TextButton.icon(
-                onPressed: () => openBrowserUrl(preview.url),
-                icon: const Icon(Icons.open_in_new, size: 16),
-                label: const Text('新窗口打开'),
+                onPressed: () => openBrowserUrl(_downloadUrl(preview.url)),
+                icon: const Icon(Icons.download_outlined, size: 16),
+                label: const Text('下载附件'),
               ),
             ],
           ),
           const SizedBox(height: 8),
           Text(
-            isPdf ? 'PDF 已在下方内嵌预览。' : 'Word 文件已生成临时链接，请在新窗口下载或用本机 Office 查看。',
+            isPdf
+                ? 'PDF 已在下方内嵌预览，下载需要手动点击。'
+                : '当前格式暂不支持内嵌预览，请点击“下载附件”后用本机 Office 查看。',
             style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
           ),
           if (preview.expiresAt != null) ...[
@@ -1308,7 +1328,10 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
               child: SizedBox(
                 key: const ValueKey('resume-preview-frame'),
                 height: 640,
-                child: ResumePreviewFrame(url: preview.url, title: preview.fileName),
+                child: ResumePreviewFrame(
+                  url: preview.url,
+                  title: preview.fileName,
+                ),
               ),
             )
           else
@@ -1333,7 +1356,7 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              '浏览器会下载 ${preview.fileName}，当前页面保留该附件的临时访问链接。',
+              '当前格式暂不支持内嵌预览，请点击“下载附件”手动下载 ${preview.fileName}。',
               style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
             ),
           ),

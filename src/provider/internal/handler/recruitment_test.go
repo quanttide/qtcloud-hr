@@ -596,6 +596,44 @@ func TestRecruitmentResumeViewCreatesShortLivedURLAndServesPDF(t *testing.T) {
 	}
 }
 
+func TestRecruitmentResumeViewLoadsStateAcrossHandlerInstances(t *testing.T) {
+	resumeRoot := filepath.Join(t.TempDir(), "qtrecurit", "inbox", "resume-files")
+	resumeDir := filepath.Join(resumeRoot, "resume-key")
+	if err := os.MkdirAll(resumeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resumePath := filepath.Join(resumeDir, "resume.pdf")
+	if err := os.WriteFile(resumePath, []byte("pdfdata"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(t.TempDir(), "state", "resume-views.json")
+	config := RecruitmentHandlerConfig{
+		AllowRealActions:    true,
+		ResumeCacheRoot:     resumeRoot,
+		ResumeViewStatePath: statePath,
+	}
+
+	first, _ := newRecruitmentTestServerWithConfig(t, &fakeRecruitmentAdapter{resumePath: resumePath}, config)
+	resp := postJSON(t, first.URL+"/api/v1/recruitment/candidates/cand_001/resume/0/view", `{}`)
+	defer resp.Body.Close()
+	var view domain.RecruitmentResumeViewResult
+	if err := json.NewDecoder(resp.Body).Decode(&view); err != nil {
+		t.Fatalf("decode resume view response: %v", err)
+	}
+	first.Close()
+
+	second, _ := newRecruitmentTestServerWithConfig(t, &fakeRecruitmentAdapter{resumePath: resumePath}, config)
+	defer second.Close()
+	fileResp, err := http.Get(second.URL + view.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fileResp.Body.Close()
+	if fileResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected cross-instance file response 200, got %d", fileResp.StatusCode)
+	}
+}
+
 func TestRecruitmentResumeViewRejectsFilesOutsideCacheRoot(t *testing.T) {
 	cacheRoot := filepath.Join(t.TempDir(), "qtrecurit", "inbox", "resume-files")
 	outsidePath := filepath.Join(t.TempDir(), "resume.pdf")

@@ -57,8 +57,10 @@ resource "alicloud_fcv3_function" "this" {
     LARKSUITE_CLI_DATA_DIR                       = "/home/app/.local/share"
     LARKSUITE_CLI_NO_SKILLS_NOTIFIER             = "1"
     LARKSUITE_CLI_NO_UPDATE_NOTIFIER             = "1"
-    QTCLOUD_HUMAN_CACHE_HOME                     = "/tmp/qtcloud-human/cache"
-    QTCLOUD_HUMAN_ACTION_LOG_DIR                 = "/tmp/qtcloud-human/audit"
+    QTCLOUD_HUMAN_CACHE_HOME                     = "/home/app/.qtcloud-human/cache"
+    QTCLOUD_HUMAN_ACTION_LOG_DIR                 = "/home/app/.qtcloud-human/audit"
+    QTCLOUD_HUMAN_RECRUITMENT_STATE_PATH         = "/home/app/.qtcloud-human/state/recruitment-candidates.json"
+    QTCLOUD_HUMAN_RESUME_VIEW_STATE_PATH         = "/home/app/.qtcloud-human/state/resume-views.json"
     QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS = tostring(var.allow_real_recruitment_actions)
     QTCLOUD_HUMAN_CORS_ORIGINS                   = var.cors_origins
     QTRECURIT_BIN                                = "/usr/local/bin/qtrecurit"

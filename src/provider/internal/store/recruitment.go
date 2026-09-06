@@ -1,7 +1,12 @@
 package store
 
 import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -9,9 +14,10 @@ import (
 )
 
 type RecruitmentStore struct {
-	mu         sync.RWMutex
-	candidates map[string]*domain.RecruitmentCandidate
-	order      []string
+	mu              sync.RWMutex
+	candidates      map[string]*domain.RecruitmentCandidate
+	order           []string
+	persistencePath string
 }
 
 func NewRecruitmentStore(initial []domain.RecruitmentCandidate) *RecruitmentStore {
@@ -34,6 +40,31 @@ func NewRecruitmentStore(initial []domain.RecruitmentCandidate) *RecruitmentStor
 		items[clone.ID] = &clone
 	}
 	return &RecruitmentStore{candidates: items, order: order}
+}
+
+func NewPersistentRecruitmentStore(path string) (*RecruitmentStore, error) {
+	cleanPath := strings.TrimSpace(path)
+	if cleanPath == "" {
+		return NewRecruitmentStore(nil), nil
+	}
+
+	store := NewRecruitmentStore(nil)
+	store.persistencePath = filepath.Clean(cleanPath)
+	data, err := os.ReadFile(store.persistencePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return store, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var candidates []domain.RecruitmentCandidate
+	if err := json.Unmarshal(data, &candidates); err != nil {
+		return nil, err
+	}
+	loaded := NewRecruitmentStore(candidates)
+	loaded.persistencePath = store.persistencePath
+	return loaded, nil
 }
 
 func DefaultRecruitmentStore() *RecruitmentStore {
@@ -86,6 +117,7 @@ func (s *RecruitmentStore) UpsertCandidates(candidates []domain.RecruitmentCandi
 		}
 		s.candidates[clone.ID] = &clone
 	}
+	s.persistLocked()
 }
 
 func (s *RecruitmentStore) ReplaceCandidates(candidates []domain.RecruitmentCandidate) {
@@ -111,6 +143,7 @@ func (s *RecruitmentStore) ReplaceCandidates(candidates []domain.RecruitmentCand
 	}
 	s.candidates = next
 	s.order = order
+	s.persistLocked()
 }
 
 func (s *RecruitmentStore) GetCandidate(id string) (domain.RecruitmentCandidate, bool) {
@@ -135,6 +168,7 @@ func (s *RecruitmentStore) UpdateCandidateStatus(candidateID string, status stri
 		candidate.ReceivedAt = candidate.UpdatedAt
 	}
 	candidate.UpdatedAt = time.Now().UTC()
+	s.persistLocked()
 	return *candidate, true
 }
 
@@ -153,6 +187,37 @@ func (s *RecruitmentStore) RecordAction(candidateID string, action string, stage
 		candidate.ReceivedAt = candidate.UpdatedAt
 	}
 	candidate.UpdatedAt = time.Now().UTC()
+	s.persistLocked()
+}
+
+func (s *RecruitmentStore) persistLocked() {
+	if s.persistencePath == "" {
+		return
+	}
+	candidates := make([]domain.RecruitmentCandidate, 0, len(s.candidates))
+	seen := make(map[string]bool, len(s.candidates))
+	for _, id := range s.order {
+		candidate, ok := s.candidates[id]
+		if !ok {
+			continue
+		}
+		candidates = append(candidates, *candidate)
+		seen[id] = true
+	}
+	for id, candidate := range s.candidates {
+		if seen[id] {
+			continue
+		}
+		candidates = append(candidates, *candidate)
+	}
+	data, err := json.Marshal(candidates)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(s.persistencePath), 0o700); err != nil {
+		return
+	}
+	_ = os.WriteFile(s.persistencePath, data, 0o600)
 }
 
 func candidateReceivedAt(candidate domain.RecruitmentCandidate) time.Time {

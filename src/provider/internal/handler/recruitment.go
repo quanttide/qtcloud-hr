@@ -27,6 +27,8 @@ import (
 
 const defaultDryRun = true
 const resumeViewTTL = 5 * time.Minute
+const candidateNotFoundMessage = "候选人不存在或数据已过期，请重新拉取新邮件"
+const resumeAttachmentNotFoundMessage = "简历附件不存在或数据已过期，请重新拉取新邮件"
 
 var isoDatePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
@@ -39,27 +41,29 @@ type RecruitmentAdapter interface {
 }
 
 type resumeView struct {
-	Path        string
-	FileName    string
-	ContentType string
-	ExpiresAt   time.Time
+	Path        string    `json:"path"`
+	FileName    string    `json:"file_name"`
+	ContentType string    `json:"content_type"`
+	ExpiresAt   time.Time `json:"expires_at"`
 }
 
 type RecruitmentHandlerConfig struct {
-	DryRunDefault    bool
-	AllowRealActions bool
-	ResumeCacheRoot  string
+	DryRunDefault       bool
+	AllowRealActions    bool
+	ResumeCacheRoot     string
+	ResumeViewStatePath string
 }
 
 type RecruitmentHandler struct {
-	store            *store.RecruitmentStore
-	adapter          RecruitmentAdapter
-	audit            recruitment.AuditLogger
-	dryRunDefault    bool
-	allowRealActions bool
-	resumeCacheRoot  string
-	resumeViews      map[string]resumeView
-	resumeViewMu     sync.Mutex
+	store               *store.RecruitmentStore
+	adapter             RecruitmentAdapter
+	audit               recruitment.AuditLogger
+	dryRunDefault       bool
+	allowRealActions    bool
+	resumeCacheRoot     string
+	resumeViewStatePath string
+	resumeViews         map[string]resumeView
+	resumeViewMu        sync.Mutex
 }
 
 func NewRecruitmentHandler(s *store.RecruitmentStore, adapter RecruitmentAdapter, audit recruitment.AuditLogger, config RecruitmentHandlerConfig) *RecruitmentHandler {
@@ -70,13 +74,14 @@ func NewRecruitmentHandler(s *store.RecruitmentStore, adapter RecruitmentAdapter
 		audit = recruitment.SlogAuditLogger{}
 	}
 	return &RecruitmentHandler{
-		store:            s,
-		adapter:          adapter,
-		audit:            audit,
-		dryRunDefault:    config.DryRunDefault,
-		allowRealActions: config.AllowRealActions,
-		resumeCacheRoot:  cleanOptionalAbsPath(config.ResumeCacheRoot),
-		resumeViews:      map[string]resumeView{},
+		store:               s,
+		adapter:             adapter,
+		audit:               audit,
+		dryRunDefault:       config.DryRunDefault,
+		allowRealActions:    config.AllowRealActions,
+		resumeCacheRoot:     cleanOptionalAbsPath(config.ResumeCacheRoot),
+		resumeViewStatePath: cleanOptionalAbsPath(config.ResumeViewStatePath),
+		resumeViews:         map[string]resumeView{},
 	}
 }
 
@@ -254,7 +259,7 @@ func (h *RecruitmentHandler) UpdateCandidateStatus(w http.ResponseWriter, r *htt
 	}
 	candidate, ok := h.store.UpdateCandidateStatus(r.PathValue("candidate_id"), status)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "candidate not found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": candidateNotFoundMessage})
 		return
 	}
 	h.logAudit(domain.RecruitmentAuditEntry{
@@ -282,7 +287,7 @@ func (h *RecruitmentHandler) RunCandidateAction(w http.ResponseWriter, r *http.R
 	candidateID := r.PathValue("candidate_id")
 	candidate, ok := h.store.GetCandidate(candidateID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "candidate not found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": candidateNotFoundMessage})
 		return
 	}
 	if err := validateCandidate(candidate); err != nil {
@@ -397,6 +402,7 @@ func (h *RecruitmentHandler) CreateResumeView(w http.ResponseWriter, r *http.Req
 		ContentType: firstNonEmpty(adapterResult.ContentType, mime.TypeByExtension(filepath.Ext(adapterResult.FileName))),
 		ExpiresAt:   expiresAt,
 	}
+	h.persistResumeViewsLocked()
 	h.resumeViewMu.Unlock()
 
 	writeJSON(w, http.StatusCreated, domain.RecruitmentResumeViewResult{
@@ -415,6 +421,11 @@ func (h *RecruitmentHandler) ServeResumeView(w http.ResponseWriter, r *http.Requ
 	h.resumeViewMu.Lock()
 	h.pruneResumeViewsLocked(now)
 	view, ok := h.resumeViews[token]
+	if !ok {
+		h.loadResumeViewsLocked()
+		h.pruneResumeViewsLocked(now)
+		view, ok = h.resumeViews[token]
+	}
 	h.resumeViewMu.Unlock()
 	if !ok || now.After(view.ExpiresAt) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "resume view not found"})
@@ -426,7 +437,7 @@ func (h *RecruitmentHandler) ServeResumeView(w http.ResponseWriter, r *http.Requ
 	}
 	contentType := firstNonEmpty(view.ContentType, mime.TypeByExtension(filepath.Ext(view.FileName)), "application/octet-stream")
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Disposition", contentDisposition(view.FileName, contentType))
+	w.Header().Set("Content-Disposition", contentDisposition(view.FileName, contentType, r.URL.Query().Get("download") == "1"))
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeFile(w, r, view.Path)
@@ -436,12 +447,12 @@ func (h *RecruitmentHandler) resumeAttachmentFromRequest(w http.ResponseWriter, 
 	candidateID := strings.TrimSpace(r.PathValue("candidate_id"))
 	candidate, ok := h.store.GetCandidate(candidateID)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "candidate not found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": candidateNotFoundMessage})
 		return domain.RecruitmentCandidate{}, domain.RecruitmentResumeAttachment{}, false
 	}
 	index, err := strconv.Atoi(r.PathValue("attachment_index"))
 	if err != nil || index < 0 || index >= len(candidate.ResumeAttachments) {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "resume attachment not found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": resumeAttachmentNotFoundMessage})
 		return domain.RecruitmentCandidate{}, domain.RecruitmentResumeAttachment{}, false
 	}
 	return candidate, candidate.ResumeAttachments[index], true
@@ -618,12 +629,43 @@ func (h *RecruitmentHandler) pruneResumeViewsLocked(now time.Time) {
 	}
 }
 
-func contentDisposition(fileName string, contentType string) string {
+func contentDisposition(fileName string, contentType string, download bool) string {
 	disposition := "attachment"
-	if contentType == "application/pdf" {
+	if contentType == "application/pdf" && !download {
 		disposition = "inline"
 	}
 	return fmt.Sprintf("%s; filename=%q", disposition, filepath.Base(fileName))
+}
+
+func (h *RecruitmentHandler) loadResumeViewsLocked() {
+	if h.resumeViewStatePath == "" {
+		return
+	}
+	data, err := os.ReadFile(h.resumeViewStatePath)
+	if err != nil {
+		return
+	}
+	var views map[string]resumeView
+	if err := json.Unmarshal(data, &views); err != nil {
+		return
+	}
+	for token, view := range views {
+		h.resumeViews[token] = view
+	}
+}
+
+func (h *RecruitmentHandler) persistResumeViewsLocked() {
+	if h.resumeViewStatePath == "" {
+		return
+	}
+	data, err := json.Marshal(h.resumeViews)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(h.resumeViewStatePath), 0o700); err != nil {
+		return
+	}
+	_ = os.WriteFile(h.resumeViewStatePath, data, 0o600)
 }
 
 func firstNonEmpty(values ...string) string {

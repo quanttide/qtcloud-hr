@@ -194,8 +194,8 @@ void main() {
     expect(find.text('邮件正文'), findsOneWidget);
     expect(find.textContaining('投递后端开发岗位'), findsOneWidget);
     expect(find.text('简历附件'), findsOneWidget);
-    expect(find.text('张三-后端开发简历.docx'), findsNWidgets(2));
-    expect(find.text('简历预览'), findsOneWidget);
+    expect(find.text('张三-后端开发简历.docx'), findsOneWidget);
+    expect(find.text('简历预览'), findsNothing);
   });
 
   testWidgets('Recruitment page previews resume only after manual request', (
@@ -261,7 +261,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('张三-后端开发简历.pdf'), findsNWidgets(2));
+    expect(find.text('张三-后端开发简历.pdf'), findsOneWidget);
     expect(requestedResumeView, isFalse);
     expect(find.text('预览'), findsOneWidget);
     expect(find.text('下载'), findsOneWidget);
@@ -276,73 +276,74 @@ void main() {
     expect(find.textContaining('PDF 已在下方内嵌预览'), findsOneWidget);
   });
 
-  testWidgets('Recruitment page does not auto-open the first resume attachment', (
-    tester,
-  ) async {
-    var resumeViewRequests = 0;
-    final client = RecruitmentApiClient(
-      baseUrl: 'https://api.example.test',
-      operator: 'tester',
-      httpClient: MockClient((request) async {
-        if (request.method == 'GET' &&
-            request.url.path == '/api/v1/recruitment/candidates') {
-          return http.Response.bytes(
-            utf8.encode(
-              jsonEncode([
-                {
-                  'id': 'cand_001',
-                  'name': '张三',
-                  'email': 'zhangsan@example.com',
-                  'subject': '应聘后端开发',
-                  'body': 'HR 您好，我想投递后端开发岗位，附件是我的简历。',
-                  'position': '后端开发',
-                  'stage': 'new',
-                  'status': 'pending',
-                  'has_resume': true,
-                  'has_cover_letter': true,
-                  'resume_attachments': [
-                    {
-                      'file_name': '张三-后端开发简历.pdf',
-                      'content_type': 'application/pdf',
-                    },
-                  ],
-                  'updated_at': '2026-09-04T00:00:00Z',
-                },
-              ]),
-            ),
-            200,
-            headers: {'content-type': 'application/json; charset=utf-8'},
-          );
-        }
-        if (request.method == 'POST' &&
-            request.url.path ==
-                '/api/v1/recruitment/candidates/cand_001/resume/0/view') {
-          resumeViewRequests++;
-          return http.Response.bytes(
-            utf8.encode(
-              jsonEncode({
-                'url': '/api/v1/recruitment/resume-view/token_001',
-                'expires_at': '2026-09-05T06:00:00Z',
-              }),
-            ),
-            201,
-            headers: {'content-type': 'application/json; charset=utf-8'},
-          );
-        }
-        return http.Response('not found', 404);
-      }),
-    );
+  testWidgets(
+    'Recruitment page does not auto-open the first resume attachment',
+    (tester) async {
+      var resumeViewRequests = 0;
+      final client = RecruitmentApiClient(
+        baseUrl: 'https://api.example.test',
+        operator: 'tester',
+        httpClient: MockClient((request) async {
+          if (request.method == 'GET' &&
+              request.url.path == '/api/v1/recruitment/candidates') {
+            return http.Response.bytes(
+              utf8.encode(
+                jsonEncode([
+                  {
+                    'id': 'cand_001',
+                    'name': '张三',
+                    'email': 'zhangsan@example.com',
+                    'subject': '应聘后端开发',
+                    'body': 'HR 您好，我想投递后端开发岗位，附件是我的简历。',
+                    'position': '后端开发',
+                    'stage': 'new',
+                    'status': 'pending',
+                    'has_resume': true,
+                    'has_cover_letter': true,
+                    'resume_attachments': [
+                      {
+                        'file_name': '张三-后端开发简历.pdf',
+                        'content_type': 'application/pdf',
+                      },
+                    ],
+                    'updated_at': '2026-09-04T00:00:00Z',
+                  },
+                ]),
+              ),
+              200,
+              headers: {'content-type': 'application/json; charset=utf-8'},
+            );
+          }
+          if (request.method == 'POST' &&
+              request.url.path ==
+                  '/api/v1/recruitment/candidates/cand_001/resume/0/view') {
+            resumeViewRequests++;
+            return http.Response.bytes(
+              utf8.encode(
+                jsonEncode({
+                  'url': '/api/v1/recruitment/resume-view/token_001',
+                  'expires_at': '2026-09-05T06:00:00Z',
+                }),
+              ),
+              201,
+              headers: {'content-type': 'application/json; charset=utf-8'},
+            );
+          }
+          return http.Response('not found', 404);
+        }),
+      );
 
-    await tester.pumpWidget(
-      MaterialApp(home: RecruitmentPage(apiClient: client)),
-    );
-    await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        MaterialApp(home: RecruitmentPage(apiClient: client)),
+      );
+      await tester.pumpAndSettle();
 
-    expect(resumeViewRequests, 0);
-    expect(find.text('简历预览'), findsNothing);
-    expect(find.text('预览'), findsOneWidget);
-    expect(find.text('下载'), findsOneWidget);
-  });
+      expect(resumeViewRequests, 0);
+      expect(find.text('简历预览'), findsNothing);
+      expect(find.text('预览'), findsOneWidget);
+      expect(find.text('下载'), findsOneWidget);
+    },
+  );
 
   testWidgets('Recruitment page sorts inbox by latest received time', (
     tester,

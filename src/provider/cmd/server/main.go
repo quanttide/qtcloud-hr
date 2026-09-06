@@ -22,14 +22,18 @@ func main() {
 
 	ts := store.NewTimesheetStore()
 	th := handler.NewTimesheetHandler(ts)
-	rs := store.DefaultRecruitmentStore()
+	rs, err := store.NewPersistentRecruitmentStore(os.Getenv("QTCLOUD_HUMAN_RECRUITMENT_STATE_PATH"))
+	if err != nil {
+		log.Fatalf("configure recruitment state: %v", err)
+	}
 	adapter := recruitment.NewCLIAdapter(recruitment.DefaultBinary(), recruitment.DefaultTimeout())
 	adapter.ArgsPrefix = recruitment.DefaultArgsPrefix()
 	audit := recruitment.NewFileAuditLogger(os.Getenv("QTCLOUD_HUMAN_ACTION_LOG_DIR"))
 	rh := handler.NewRecruitmentHandler(rs, adapter, audit, handler.RecruitmentHandlerConfig{
-		DryRunDefault:    dryRunDefault(),
-		AllowRealActions: allowRealRecruitmentActions(),
-		ResumeCacheRoot:  recruitmentResumeCacheRoot(),
+		DryRunDefault:       dryRunDefault(),
+		AllowRealActions:    allowRealRecruitmentActions(),
+		ResumeCacheRoot:     recruitmentResumeCacheRoot(),
+		ResumeViewStatePath: os.Getenv("QTCLOUD_HUMAN_RESUME_VIEW_STATE_PATH"),
 	})
 
 	mux := http.NewServeMux()
