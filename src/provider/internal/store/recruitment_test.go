@@ -1,6 +1,7 @@
 package store
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -68,6 +69,33 @@ func TestListCandidatesKeepsInputOrderWhenReceivedAtMatches(t *testing.T) {
 
 	if got := candidates[0].ID; got != "cand_first" {
 		t.Fatalf("first candidate = %s, want cand_first", got)
+	}
+}
+
+func TestPersistentRecruitmentStoreLoadsCandidatesAcrossInstances(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state", "candidates.json")
+	first, err := NewPersistentRecruitmentStore(statePath)
+	if err != nil {
+		t.Fatalf("create first store: %v", err)
+	}
+	first.ReplaceCandidates([]domain.RecruitmentCandidate{{
+		ID:     "cand_persisted",
+		Name:   "李四",
+		Email:  "lisi@example.com",
+		Stage:  "new",
+		Status: "pending",
+	}})
+
+	second, err := NewPersistentRecruitmentStore(statePath)
+	if err != nil {
+		t.Fatalf("create second store: %v", err)
+	}
+	got, ok := second.GetCandidate("cand_persisted")
+	if !ok {
+		t.Fatal("persisted candidate was not loaded")
+	}
+	if got.Email != "lisi@example.com" {
+		t.Fatalf("candidate email = %q, want lisi@example.com", got.Email)
 	}
 }
 

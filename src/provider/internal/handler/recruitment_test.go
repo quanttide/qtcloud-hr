@@ -582,6 +582,18 @@ func TestRecruitmentResumeViewCreatesShortLivedURLAndServesPDF(t *testing.T) {
 	if disposition := fileResp.Header.Get("Content-Disposition"); !strings.HasPrefix(disposition, "inline;") {
 		t.Fatalf("content-disposition = %q, want inline", disposition)
 	}
+
+	downloadResp, err := http.Get(ts.URL + view.URL + "?download=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer downloadResp.Body.Close()
+	if downloadResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected download response 200, got %d", downloadResp.StatusCode)
+	}
+	if disposition := downloadResp.Header.Get("Content-Disposition"); !strings.HasPrefix(disposition, "attachment;") {
+		t.Fatalf("download content-disposition = %q, want attachment", disposition)
+	}
 }
 
 func TestRecruitmentResumeViewRejectsFilesOutsideCacheRoot(t *testing.T) {
