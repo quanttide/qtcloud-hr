@@ -32,6 +32,7 @@
 - `lark-cli` 登录态必须在 provider 生产运行环境内建立或通过生产安全凭证介质挂载，不要提交到 Git。`config.json` 只是 CLI 配置索引，不能替代 token / app secret 所在的 CLI 凭证存储。Windows 本地凭证使用 DPAPI/注册表，不能直接复制到 Linux FC；生产凭证应在 Linux/FC 等价环境重新授权，或改造为服务端直接调用飞书 OpenAPI。
 - 如通过 OSS 承载 provider 凭证目录，设置 GitHub repository variables `QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_BUCKET`、`QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_PREFIX`、可选的 `QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_ENDPOINT` 与可选的 `QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_POLICY_NAME` 后，部署 workflow 会传递 Terraform 变量 `lark_cli_credentials_oss_bucket`、`lark_cli_credentials_oss_prefix`、`lark_cli_credentials_oss_endpoint` 与 `lark_cli_credentials_oss_policy_name`。endpoint 可填写带或不带 `https://` 的地址，Terraform 会统一转换为 FC 要求的 HTTPS URL 格式。凭证 OSS 前缀所需的 RAM 自定义策略必须预先存在，默认名称为 `<project>-<environment>-lark-cli-credentials`，Terraform 只负责将该策略挂到 FC 角色；这样部署不依赖 CI 身份的 `ram:ListTagResources` 权限。Terraform 会把该前缀挂载到 `/home/app`，供 `lark-cli` 自动刷新用户 token。
 - provider 的候选人快照、qtrecurit 邮件/简历缓存、预览 token 和动作日志也写入同一私有 OSS 挂载目录，避免 FC 实例切换后出现 `candidate not found` 或简历预览失效；该前缀必须保持私有，不得用于静态站点或公开下载。
+- HTTP 触发器当前是匿名入口，`X-Operator` 只是开发期上下文，不能作为身份认证；在接入 API 网关或其他真实认证、并确认 FC 不能被绕过访问前，不得把 `QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS` 设为 `true`。
 - 手动 workflow `.github/workflows/bootstrap-lark-cli-credentials.yml` 可在 GitHub Linux runner 上生成 provider 可用凭证目录并上传到私有 OSS 前缀；运行前需配置 repository secret `QTCLOUD_HUMAN_LARK_CLI_APP_SECRET` 和 repository variable `QTCLOUD_HUMAN_LARK_CLI_APP_ID`。
 
 ## 前后端发布顺序

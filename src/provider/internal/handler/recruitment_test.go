@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/quanttide/qtcloud-human/src/provider/internal/domain"
 	"github.com/quanttide/qtcloud-human/src/provider/internal/recruitment"
@@ -649,6 +650,48 @@ func TestRecruitmentResumeViewRejectsFilesOutsideCacheRoot(t *testing.T) {
 
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d", resp.StatusCode)
+	}
+}
+
+func TestRecruitmentResumeViewRejectsPersistedFilesOutsideCacheRoot(t *testing.T) {
+	cacheRoot := filepath.Join(t.TempDir(), "qtrecurit", "inbox", "resume-files")
+	outsidePath := filepath.Join(t.TempDir(), "resume.pdf")
+	if err := os.WriteFile(outsidePath, []byte("pdfdata"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(t.TempDir(), "state", "resume-views.json")
+	views := map[string]resumeView{
+		"persisted-token": {
+			Path:        outsidePath,
+			FileName:    "resume.pdf",
+			ContentType: "application/pdf",
+			ExpiresAt:   time.Now().UTC().Add(time.Minute),
+		},
+	}
+	data, err := json.Marshal(views)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ts, _ := newRecruitmentTestServerWithConfig(t, &fakeRecruitmentAdapter{}, RecruitmentHandlerConfig{
+		ResumeCacheRoot:     cacheRoot,
+		ResumeViewStatePath: statePath,
+	})
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/v1/recruitment/resume-view/persisted-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for persisted file outside cache root, got %d", resp.StatusCode)
 	}
 }
 

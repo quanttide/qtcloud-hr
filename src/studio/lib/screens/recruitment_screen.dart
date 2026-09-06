@@ -487,11 +487,13 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
       }
       return;
     }
+    final downloadWindow = openBrowserWindow();
     await _loadResumeAttachment(
       email,
       attachmentIndex,
       attachment,
       openDownload: true,
+      downloadWindow: downloadWindow,
     );
   }
 
@@ -500,6 +502,7 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     int attachmentIndex,
     RecruitmentResumeAttachment attachment, {
     required bool openDownload,
+    Object? downloadWindow,
   }) async {
     if (_apiClient == null) {
       setState(() {
@@ -520,10 +523,15 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
         attachmentIndex: attachmentIndex,
       );
       if (openDownload) {
-        openBrowserUrl(_downloadUrl(view.url));
+        final downloadUrl = _downloadUrl(view.url);
+        if (downloadWindow != null) {
+          navigateBrowserWindow(downloadWindow, downloadUrl);
+        } else {
+          openBrowserUrl(downloadUrl);
+        }
         unawaited(
           Clipboard.setData(
-            ClipboardData(text: _downloadUrl(view.url)),
+            ClipboardData(text: downloadUrl),
           ).catchError((_) {}),
         );
       }

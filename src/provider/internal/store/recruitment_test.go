@@ -99,6 +99,34 @@ func TestPersistentRecruitmentStoreLoadsCandidatesAcrossInstances(t *testing.T) 
 	}
 }
 
+func TestPersistentRecruitmentStoreRefreshesExternalChanges(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state", "candidates.json")
+	first, err := NewPersistentRecruitmentStore(statePath)
+	if err != nil {
+		t.Fatalf("create first store: %v", err)
+	}
+	second, err := NewPersistentRecruitmentStore(statePath)
+	if err != nil {
+		t.Fatalf("create second store: %v", err)
+	}
+
+	first.ReplaceCandidates([]domain.RecruitmentCandidate{{
+		ID:     "cand_new",
+		Name:   "王五",
+		Email:  "wangwu@example.com",
+		Stage:  "new",
+		Status: "pending",
+	}})
+
+	got, ok := second.GetCandidate("cand_new")
+	if !ok {
+		t.Fatal("second store did not refresh the latest candidate snapshot")
+	}
+	if got.Email != "wangwu@example.com" {
+		t.Fatalf("candidate email = %q, want wangwu@example.com", got.Email)
+	}
+}
+
 func TestReplaceCandidatesDropsStaleItems(t *testing.T) {
 	store := NewRecruitmentStore([]domain.RecruitmentCandidate{
 		{ID: "cand_old", Name: "旧候选人", Email: "old@example.com", Stage: "new", Status: "pending"},

@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -50,21 +51,10 @@ func NewPersistentRecruitmentStore(path string) (*RecruitmentStore, error) {
 
 	store := NewRecruitmentStore(nil)
 	store.persistencePath = filepath.Clean(cleanPath)
-	data, err := os.ReadFile(store.persistencePath)
-	if errors.Is(err, os.ErrNotExist) {
-		return store, nil
-	}
-	if err != nil {
+	if err := store.loadPersistedLocked(); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-
-	var candidates []domain.RecruitmentCandidate
-	if err := json.Unmarshal(data, &candidates); err != nil {
-		return nil, err
-	}
-	loaded := NewRecruitmentStore(candidates)
-	loaded.persistencePath = store.persistencePath
-	return loaded, nil
+	return store, nil
 }
 
 func DefaultRecruitmentStore() *RecruitmentStore {
@@ -72,8 +62,9 @@ func DefaultRecruitmentStore() *RecruitmentStore {
 }
 
 func (s *RecruitmentStore) ListCandidates() []domain.RecruitmentCandidate {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refreshPersistedLocked()
 	out := make([]domain.RecruitmentCandidate, 0, len(s.candidates))
 	seen := make(map[string]bool, len(s.candidates))
 	for _, id := range s.order {
@@ -101,6 +92,7 @@ func (s *RecruitmentStore) ListCandidates() []domain.RecruitmentCandidate {
 func (s *RecruitmentStore) UpsertCandidates(candidates []domain.RecruitmentCandidate) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.refreshPersistedLocked()
 	for _, candidate := range candidates {
 		if candidate.ID == "" {
 			continue
@@ -147,8 +139,9 @@ func (s *RecruitmentStore) ReplaceCandidates(candidates []domain.RecruitmentCand
 }
 
 func (s *RecruitmentStore) GetCandidate(id string) (domain.RecruitmentCandidate, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refreshPersistedLocked()
 	candidate, ok := s.candidates[id]
 	if !ok {
 		return domain.RecruitmentCandidate{}, false
@@ -159,6 +152,7 @@ func (s *RecruitmentStore) GetCandidate(id string) (domain.RecruitmentCandidate,
 func (s *RecruitmentStore) UpdateCandidateStatus(candidateID string, status string) (domain.RecruitmentCandidate, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.refreshPersistedLocked()
 	candidate, ok := s.candidates[candidateID]
 	if !ok {
 		return domain.RecruitmentCandidate{}, false
@@ -175,6 +169,7 @@ func (s *RecruitmentStore) UpdateCandidateStatus(candidateID string, status stri
 func (s *RecruitmentStore) RecordAction(candidateID string, action string, stage string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.refreshPersistedLocked()
 	candidate, ok := s.candidates[candidateID]
 	if !ok {
 		return
@@ -215,9 +210,70 @@ func (s *RecruitmentStore) persistLocked() {
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(s.persistencePath), 0o700); err != nil {
+		slog.Error("create recruitment state directory", "path", s.persistencePath, "error", err)
 		return
 	}
-	_ = os.WriteFile(s.persistencePath, data, 0o600)
+	temp, err := os.CreateTemp(filepath.Dir(s.persistencePath), ".recruitment-candidates-*.tmp")
+	if err != nil {
+		slog.Error("create recruitment state temp file", "path", s.persistencePath, "error", err)
+		return
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		slog.Error("protect recruitment state temp file", "path", s.persistencePath, "error", err)
+		_ = temp.Close()
+		return
+	}
+	if _, err := temp.Write(data); err != nil {
+		slog.Error("write recruitment state", "path", s.persistencePath, "error", err)
+		_ = temp.Close()
+		return
+	}
+	if err := temp.Sync(); err != nil {
+		slog.Error("sync recruitment state", "path", s.persistencePath, "error", err)
+		_ = temp.Close()
+		return
+	}
+	if err := temp.Close(); err != nil {
+		slog.Error("close recruitment state", "path", s.persistencePath, "error", err)
+		return
+	}
+	if err := os.Rename(tempPath, s.persistencePath); err != nil {
+		if removeErr := os.Remove(s.persistencePath); removeErr == nil {
+			err = os.Rename(tempPath, s.persistencePath)
+		}
+	}
+	if err != nil {
+		slog.Error("replace recruitment state", "path", s.persistencePath, "error", err)
+	}
+}
+
+func (s *RecruitmentStore) refreshPersistedLocked() {
+	if s.persistencePath == "" {
+		return
+	}
+	if err := s.loadPersistedLocked(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Warn("refresh recruitment state", "path", s.persistencePath, "error", err)
+	}
+}
+
+func (s *RecruitmentStore) loadPersistedLocked() error {
+	if s.persistencePath == "" {
+		return nil
+	}
+	data, err := os.ReadFile(s.persistencePath)
+	if err != nil {
+		return err
+	}
+	var candidates []domain.RecruitmentCandidate
+	if err := json.Unmarshal(data, &candidates); err != nil {
+		return err
+	}
+	loaded := NewRecruitmentStore(candidates)
+	s.candidates = loaded.candidates
+	s.order = loaded.order
+	return nil
 }
 
 func candidateReceivedAt(candidate domain.RecruitmentCandidate) time.Time {

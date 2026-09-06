@@ -395,6 +395,7 @@ func (h *RecruitmentHandler) CreateResumeView(w http.ResponseWriter, r *http.Req
 	}
 	expiresAt := time.Now().UTC().Add(resumeViewTTL)
 	h.resumeViewMu.Lock()
+	h.loadResumeViewsLocked()
 	h.pruneResumeViewsLocked(time.Now().UTC())
 	h.resumeViews[token] = resumeView{
 		Path:        resolved,
@@ -432,6 +433,10 @@ func (h *RecruitmentHandler) ServeResumeView(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if info, err := os.Stat(view.Path); err != nil || info.IsDir() {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "resume view not found"})
+		return
+	}
+	if !pathIsUnderRoot(view.Path, h.resumeCacheRoot) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "resume view not found"})
 		return
 	}
@@ -663,9 +668,43 @@ func (h *RecruitmentHandler) persistResumeViewsLocked() {
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(h.resumeViewStatePath), 0o700); err != nil {
+		slog.Error("create resume view state directory", "path", h.resumeViewStatePath, "error", err)
 		return
 	}
-	_ = os.WriteFile(h.resumeViewStatePath, data, 0o600)
+	temp, err := os.CreateTemp(filepath.Dir(h.resumeViewStatePath), ".resume-views-*.tmp")
+	if err != nil {
+		slog.Error("create resume view state temp file", "path", h.resumeViewStatePath, "error", err)
+		return
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		slog.Error("protect resume view state temp file", "path", h.resumeViewStatePath, "error", err)
+		_ = temp.Close()
+		return
+	}
+	if _, err := temp.Write(data); err != nil {
+		slog.Error("write resume view state", "path", h.resumeViewStatePath, "error", err)
+		_ = temp.Close()
+		return
+	}
+	if err := temp.Sync(); err != nil {
+		slog.Error("sync resume view state", "path", h.resumeViewStatePath, "error", err)
+		_ = temp.Close()
+		return
+	}
+	if err := temp.Close(); err != nil {
+		slog.Error("close resume view state", "path", h.resumeViewStatePath, "error", err)
+		return
+	}
+	if err := os.Rename(tempPath, h.resumeViewStatePath); err != nil {
+		if removeErr := os.Remove(h.resumeViewStatePath); removeErr == nil {
+			err = os.Rename(tempPath, h.resumeViewStatePath)
+		}
+	}
+	if err != nil {
+		slog.Error("replace resume view state", "path", h.resumeViewStatePath, "error", err)
+	}
 }
 
 func firstNonEmpty(values ...string) string {
