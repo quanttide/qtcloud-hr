@@ -79,4 +79,9 @@ variable "lark_cli_credentials_oss_endpoint" {
   description = "可选：lark-cli 凭证 OSS mount endpoint"
   type        = string
   default     = "https://oss-cn-hangzhou-internal.aliyuncs.com"
+
+  validation {
+    condition     = trimspace(var.lark_cli_credentials_oss_endpoint) != "" && !startswith(lower(trimspace(var.lark_cli_credentials_oss_endpoint)), "http://")
+    error_message = "lark_cli_credentials_oss_endpoint must be a non-empty HTTPS OSS endpoint; the https:// scheme may be omitted."
+  }
 }

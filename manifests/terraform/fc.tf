@@ -27,6 +27,11 @@ resource "alicloud_ram_role_policy_attachment" "fc_lark_cli_credentials" {
 
 # 函数计算（FC 3.0）：custom-container 容器镜像，内置 qtrecurit CLI
 resource "alicloud_fcv3_function" "this" {
+  depends_on = [
+    alicloud_ram_role_policy_attachment.fc_vpc,
+    alicloud_ram_role_policy_attachment.fc_lark_cli_credentials,
+  ]
+
   function_name   = local.app_name_prefix
   description     = "qtcloud-human 人力资源 API"
   runtime         = "custom-container"

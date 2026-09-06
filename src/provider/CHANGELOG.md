@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## [0.1.5] - 2026-09-06
+
+### Fixed
+
+- 移除已完成的一次性 Terraform state 迁移步骤，避免后续部署重复执行。
+- FC 函数更新显式等待凭证 OSS RAM 策略绑定，并限制凭证挂载 endpoint 使用 HTTPS。
+
 ## [0.1.4] - 2026-09-06
 
 ### Fixed

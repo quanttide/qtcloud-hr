@@ -30,7 +30,7 @@
 - FC 环境变量默认设置 `HOME=/home/app`、`LARKSUITE_CLI_CONFIG_DIR=/home/app/.lark-cli`、`LARKSUITE_CLI_DATA_DIR=/home/app/.local/share`、`QTCLOUD_HUMAN_CACHE_HOME=/tmp/qtcloud-human/cache`、`QTCLOUD_HUMAN_ACTION_LOG_DIR=/tmp/qtcloud-human/audit`、`QTCLOUD_HUMAN_CORS_ORIGINS=https://human.cloud.quanttide.com`、`QTRECURIT_DRY_RUN_DEFAULT=true`、`QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS=false`。
 - 真实发送前需要确认 FC 运行环境里的 `lark-cli` 已具备访问 `hr@quanttide.com` 的认证上下文，并把 GitHub repository variable `QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS` 显式设为 `true`；否则页面只能 dry-run，真实收件箱同步、发送和简历下载会被 provider 拒绝。
 - `lark-cli` 登录态必须在 provider 生产运行环境内建立或通过生产安全凭证介质挂载，不要提交到 Git。`config.json` 只是 CLI 配置索引，不能替代 token / app secret 所在的 CLI 凭证存储。Windows 本地凭证使用 DPAPI/注册表，不能直接复制到 Linux FC；生产凭证应在 Linux/FC 等价环境重新授权，或改造为服务端直接调用飞书 OpenAPI。
-- 如通过 OSS 承载 provider 凭证目录，设置 GitHub repository variables `QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_BUCKET`、`QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_PREFIX` 与可选的 `QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_ENDPOINT` 后，部署 workflow 会传递 Terraform 变量 `lark_cli_credentials_oss_bucket`、`lark_cli_credentials_oss_prefix` 与 `lark_cli_credentials_oss_endpoint`。endpoint 可填写带或不带 `https://` 的地址，Terraform 会统一转换为 FC 要求的 URL 格式。凭证 OSS 前缀所需的 RAM 自定义策略必须预先存在，默认名称为 `<project>-<environment>-lark-cli-credentials`，Terraform 只负责将该策略挂到 FC 角色；这样部署不依赖 CI 身份的 `ram:ListTagResources` 权限。Terraform 会把该前缀挂载到 `/home/app`，供 `lark-cli` 自动刷新用户 token。
+- 如通过 OSS 承载 provider 凭证目录，设置 GitHub repository variables `QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_BUCKET`、`QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_PREFIX`、可选的 `QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_ENDPOINT` 与可选的 `QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_POLICY_NAME` 后，部署 workflow 会传递 Terraform 变量 `lark_cli_credentials_oss_bucket`、`lark_cli_credentials_oss_prefix`、`lark_cli_credentials_oss_endpoint` 与 `lark_cli_credentials_oss_policy_name`。endpoint 可填写带或不带 `https://` 的地址，Terraform 会统一转换为 FC 要求的 HTTPS URL 格式。凭证 OSS 前缀所需的 RAM 自定义策略必须预先存在，默认名称为 `<project>-<environment>-lark-cli-credentials`，Terraform 只负责将该策略挂到 FC 角色；这样部署不依赖 CI 身份的 `ram:ListTagResources` 权限。Terraform 会把该前缀挂载到 `/home/app`，供 `lark-cli` 自动刷新用户 token。
 - 手动 workflow `.github/workflows/bootstrap-lark-cli-credentials.yml` 可在 GitHub Linux runner 上生成 provider 可用凭证目录并上传到私有 OSS 前缀；运行前需配置 repository secret `QTCLOUD_HUMAN_LARK_CLI_APP_SECRET` 和 repository variable `QTCLOUD_HUMAN_LARK_CLI_APP_ID`。
 
 ## 前后端发布顺序
@@ -45,10 +45,11 @@
 1. 在受控环境完成 HR 邮箱用户授权，确保 `lark-cli` 对 `hr@quanttide.com` 有 `mail` 域读取和发送权限。
 2. 在 Linux/FC 等价环境生成完整凭证目录：`/home/app/.lark-cli/config.json`、`/home/app/.local/share/lark-cli/master.key` 和对应 `*.enc` 凭证文件必须成组保留；不要从 Windows 本机复制 DPAPI 凭证。推荐手动运行 `Bootstrap Lark CLI Credentials` workflow，让 HR 用户通过 Step Summary 中的 URL/二维码授权。
 3. 将该 `/home/app` 目录内容上传到私有 OSS 前缀，例如 `qtrecruit-private/lark-cli/hr-mailbox/home/`；该前缀不要用于静态站点或公开下载。
-4. 确认 GitHub repository variables `QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_BUCKET` 和 `QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_PREFIX` 已配置，推送新的 `provider/*` tag 部署 provider，先保持 GitHub repository variable `QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS` 未设置或为 `false`。
-5. 调用 `QTCLOUD_HUMAN_API_BASE_URL/api/v1/recruitment/provider/status`，确认 `qtrecurit` 与 `hr_mailbox` 两个组件均为 `ok`。
-6. 将 GitHub repository variable `QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS` 设置为 `true`，再次推送新的 `provider/*` tag 触发部署。
-7. 部署后先用小页数执行真实收件箱同步，再验证动作审计日志只包含元数据，不包含邮件正文、候选人邮箱、token 或环境变量。
+4. 确认 GitHub repository variables `QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_BUCKET` 和 `QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_PREFIX` 已配置，并确认默认 RAM policy `<project>-<environment>-lark-cli-credentials` 已限制到该 bucket/prefix；如使用其他策略名，额外配置 `QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_POLICY_NAME`。
+5. 推送新的 `provider/*` tag 部署 provider，先保持 GitHub repository variable `QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS` 未设置或为 `false`。
+6. 调用 `QTCLOUD_HUMAN_API_BASE_URL/api/v1/recruitment/provider/status`，确认 `qtrecurit` 与 `hr_mailbox` 两个组件均为 `ok`。
+7. 将 GitHub repository variable `QTCLOUD_HUMAN_ALLOW_REAL_RECRUITMENT_ACTIONS` 设置为 `true`，再次推送新的 `provider/*` tag 触发部署。
+8. 部署后先用小页数执行真实收件箱同步，再验证动作审计日志只包含元数据，不包含邮件正文、候选人邮箱、token 或环境变量。
 
 ## 关键操作记录（手动部署踩坑，源自 qtrecurit 经验）
 

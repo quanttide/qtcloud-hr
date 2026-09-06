@@ -27,6 +27,7 @@ env:
   # 可选：生产 lark-cli 用户认证态 OSS 挂载。未配置 bucket/prefix 时 Terraform 不挂载。
   TF_VAR_lark_cli_credentials_oss_bucket: ${{ vars.QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_BUCKET || '' }}
   TF_VAR_lark_cli_credentials_oss_prefix: ${{ vars.QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_PREFIX || '' }}
+  TF_VAR_lark_cli_credentials_oss_policy_name: ${{ vars.QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_POLICY_NAME || '' }}
   TF_VAR_lark_cli_credentials_oss_endpoint: ${{ vars.QTCLOUD_HUMAN_LARK_CLI_CREDENTIALS_OSS_ENDPOINT || 'https://oss-cn-hangzhou-internal.aliyuncs.com' }}
   TF_VAR_qtrecurit_timeout_seconds: "60"
   TF_STATE_BUCKET: quanttide-terraform-state
@@ -104,10 +105,6 @@ jobs:
             -backend-config="bucket=${{ env.TF_STATE_BUCKET }}" \
             -backend-config="key=${{ env.TF_STATE_KEY }}" \
             -backend-config="region=${{ env.TF_VAR_region }}"
-
-      - name: Migrate legacy credentials policy state
-        working-directory: manifests/terraform
-        run: terraform state rm 'alicloud_ram_policy.lark_cli_credentials[0]' || true
 
       - name: Terraform Validate
         working-directory: manifests/terraform
