@@ -1,5 +1,1 @@
-Object? openBrowserWindow() => null;
-
-void openBrowserUrl(String url) {}
-
-void navigateBrowserWindow(Object? window, String url) {}
+void downloadBrowserFile(String url, String fileName) {}

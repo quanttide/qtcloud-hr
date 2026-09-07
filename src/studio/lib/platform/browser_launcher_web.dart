@@ -1,24 +1,11 @@
-import 'dart:js_interop';
-import 'dart:js_interop_unsafe';
+import 'package:web/web.dart' as web;
 
-@JS('window')
-external JSObject get _window;
-
-Object? openBrowserWindow() {
-  return _window.callMethod(
-    'open'.toJS,
-    ''.toJS,
-    '_blank'.toJS,
-  );
-}
-
-void openBrowserUrl(String url) {
-  _window.callMethod('open'.toJS, url.toJS, '_blank'.toJS, 'noopener'.toJS);
-}
-
-void navigateBrowserWindow(Object? window, String url) {
-  if (window == null) {
-    return;
-  }
-  (window as JSObject).setProperty('location'.toJS, url.toJS);
+void downloadBrowserFile(String url, String fileName) {
+  final anchor = web.HTMLAnchorElement()
+    ..href = url
+    ..download = fileName
+    ..style.display = 'none';
+  web.document.body?.append(anchor);
+  anchor.click();
+  anchor.remove();
 }

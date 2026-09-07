@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../platform/browser_launcher.dart';
 import '../platform/resume_preview_frame.dart';
@@ -110,9 +109,10 @@ class _ResumePreview {
 }
 
 class RecruitmentPage extends StatefulWidget {
-  const RecruitmentPage({super.key, this.apiClient});
+  const RecruitmentPage({super.key, this.apiClient, this.onDownloadResume});
 
   final RecruitmentApiClient? apiClient;
+  final void Function(String url, String fileName)? onDownloadResume;
 
   @override
   State<RecruitmentPage> createState() => _RecruitmentPageState();
@@ -478,7 +478,7 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     if (preview?.key == key &&
         (preview?.expiresAt == null ||
             preview!.expiresAt!.isAfter(DateTime.now().toUtc()))) {
-      openBrowserUrl(_downloadUrl(preview!.url));
+      _downloadResumeUrl(_downloadUrl(preview!.url), attachment.fileName);
       if (mounted) {
         setState(() {
           _lastActionMessage = '已开始下载：${attachment.fileName}';
@@ -487,13 +487,11 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
       }
       return;
     }
-    final downloadWindow = openBrowserWindow();
     await _loadResumeAttachment(
       email,
       attachmentIndex,
       attachment,
       openDownload: true,
-      downloadWindow: downloadWindow,
     );
   }
 
@@ -502,7 +500,6 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     int attachmentIndex,
     RecruitmentResumeAttachment attachment, {
     required bool openDownload,
-    Object? downloadWindow,
   }) async {
     if (_apiClient == null) {
       setState(() {
@@ -524,16 +521,7 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
       );
       if (openDownload) {
         final downloadUrl = _downloadUrl(view.url);
-        if (downloadWindow != null) {
-          navigateBrowserWindow(downloadWindow, downloadUrl);
-        } else {
-          openBrowserUrl(downloadUrl);
-        }
-        unawaited(
-          Clipboard.setData(
-            ClipboardData(text: downloadUrl),
-          ).catchError((_) {}),
-        );
+        _downloadResumeUrl(downloadUrl, attachment.fileName);
       }
       if (!mounted) {
         return;
@@ -559,6 +547,10 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
         setState(() => _openingAttachmentKey = null);
       }
     }
+  }
+
+  void _downloadResumeUrl(String url, String fileName) {
+    (widget.onDownloadResume ?? downloadBrowserFile)(url, fileName);
   }
 
   String _downloadUrl(String url) {
@@ -1314,7 +1306,10 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
                 ),
               ),
               TextButton.icon(
-                onPressed: () => openBrowserUrl(_downloadUrl(preview.url)),
+                onPressed: () => _downloadResumeUrl(
+                  _downloadUrl(preview.url),
+                  preview.fileName,
+                ),
                 icon: const Icon(Icons.download_outlined, size: 16),
                 label: const Text('下载附件'),
               ),

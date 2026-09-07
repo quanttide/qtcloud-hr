@@ -21,6 +21,11 @@ type RecruitmentStore struct {
 	persistencePath string
 }
 
+type persistedRecruitmentState struct {
+	Candidates                []domain.RecruitmentCandidate `json:"candidates"`
+	ResumeAttachmentSourceIDs map[string][]string           `json:"resume_attachment_source_ids,omitempty"`
+}
+
 func NewRecruitmentStore(initial []domain.RecruitmentCandidate) *RecruitmentStore {
 	items := make(map[string]*domain.RecruitmentCandidate, len(initial))
 	order := make([]string, 0, len(initial))
@@ -205,7 +210,22 @@ func (s *RecruitmentStore) persistLocked() {
 		}
 		candidates = append(candidates, *candidate)
 	}
-	data, err := json.Marshal(candidates)
+	sourceIDs := make(map[string][]string)
+	for _, candidate := range candidates {
+		ids := make([]string, len(candidate.ResumeAttachments))
+		hasSourceID := false
+		for index, attachment := range candidate.ResumeAttachments {
+			ids[index] = attachment.SourceID
+			hasSourceID = hasSourceID || attachment.SourceID != ""
+		}
+		if hasSourceID {
+			sourceIDs[candidate.ID] = ids
+		}
+	}
+	data, err := json.Marshal(persistedRecruitmentState{
+		Candidates:                candidates,
+		ResumeAttachmentSourceIDs: sourceIDs,
+	})
 	if err != nil {
 		return
 	}
@@ -266,11 +286,23 @@ func (s *RecruitmentStore) loadPersistedLocked() error {
 	if err != nil {
 		return err
 	}
-	var candidates []domain.RecruitmentCandidate
-	if err := json.Unmarshal(data, &candidates); err != nil {
-		return err
+	var state persistedRecruitmentState
+	if err := json.Unmarshal(data, &state); err != nil || state.Candidates == nil {
+		var legacyCandidates []domain.RecruitmentCandidate
+		if legacyErr := json.Unmarshal(data, &legacyCandidates); legacyErr != nil {
+			return legacyErr
+		}
+		state.Candidates = legacyCandidates
 	}
-	loaded := NewRecruitmentStore(candidates)
+	for _, candidate := range state.Candidates {
+		ids := state.ResumeAttachmentSourceIDs[candidate.ID]
+		for index := range candidate.ResumeAttachments {
+			if index < len(ids) && ids[index] != "" {
+				candidate.ResumeAttachments[index].SourceID = ids[index]
+			}
+		}
+	}
+	loaded := NewRecruitmentStore(state.Candidates)
 	s.candidates = loaded.candidates
 	s.order = loaded.order
 	return nil
