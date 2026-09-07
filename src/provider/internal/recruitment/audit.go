@@ -31,7 +31,10 @@ func (l *FileAuditLogger) Log(entry domain.RecruitmentAuditEntry) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(l.dir, 0o755); err != nil {
+	if err := os.MkdirAll(l.dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(l.dir, 0o700); err != nil {
 		return err
 	}
 	l.mu.Lock()

@@ -430,6 +430,44 @@ func TestRecruitmentLiveAdapterCallsDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestRecruitmentLiveActionsRequireReadyProvider(t *testing.T) {
+	adapter := &fakeRecruitmentAdapter{
+		status: domain.RecruitmentProviderStatus{
+			Status:  "blocked",
+			Ready:   false,
+			Mailbox: "hr@quanttide.com",
+		},
+	}
+	ts, _ := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{
+		AllowRealActions: true,
+	})
+	defer ts.Close()
+
+	cases := []struct {
+		name string
+		url  string
+		body string
+	}{
+		{name: "report", url: "/api/v1/recruitment/reports", body: `{"days":30,"dry_run":false}`},
+		{name: "sync", url: "/api/v1/recruitment/inbox/sync", body: `{"dry_run":false}`},
+		{name: "action", url: "/api/v1/recruitment/candidates/cand_001/actions", body: `{"action":"send_exam","dry_run":false,"params":{}}`},
+		{name: "resume", url: "/api/v1/recruitment/candidates/cand_001/resume/0/view", body: `{}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := postJSON(t, ts.URL+tc.url, tc.body)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusServiceUnavailable {
+				t.Fatalf("expected 503, got %d", resp.StatusCode)
+			}
+		})
+	}
+	if len(adapter.reports) != 0 || len(adapter.inboxSyncs) != 0 || len(adapter.actions) != 0 || len(adapter.resumes) != 0 {
+		t.Fatalf("adapter should not execute live operations while provider is blocked: reports=%d syncs=%d actions=%d resumes=%d", len(adapter.reports), len(adapter.inboxSyncs), len(adapter.actions), len(adapter.resumes))
+	}
+}
+
 func TestRecruitmentCandidateActionsValidateWhitelistAndRequiredParams(t *testing.T) {
 	adapter := &fakeRecruitmentAdapter{}
 	ts, _ := newRecruitmentTestServer(t, adapter)
@@ -677,7 +715,7 @@ func TestRecruitmentResumeViewCreatesShortLivedURLAndServesPDF(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapter := &fakeRecruitmentAdapter{resumePath: resumePath}
-	ts, _ := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{ResumeCacheRoot: cacheRoot, AllowRealActions: true})
+	ts, logDir := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{ResumeCacheRoot: cacheRoot, AllowRealActions: true})
 	defer ts.Close()
 
 	resp := postJSON(t, ts.URL+"/api/v1/recruitment/candidates/cand_001/resume/0/view", `{}`)
@@ -721,6 +759,13 @@ func TestRecruitmentResumeViewCreatesShortLivedURLAndServesPDF(t *testing.T) {
 	}
 	if disposition := downloadResp.Header.Get("Content-Disposition"); !strings.HasPrefix(disposition, "attachment;") {
 		t.Fatalf("download content-disposition = %q, want attachment", disposition)
+	}
+	auditData, err := os.ReadFile(filepath.Join(logDir, "recruitment-actions.jsonl"))
+	if err != nil {
+		t.Fatalf("read resume audit log: %v", err)
+	}
+	if !strings.Contains(string(auditData), `"action":"view_resume"`) || !strings.Contains(string(auditData), `"action":"download_resume"`) {
+		t.Fatalf("resume access should be audited: %s", auditData)
 	}
 }
 
@@ -837,6 +882,46 @@ func TestRecruitmentResumeViewRequiresOperator(t *testing.T) {
 	}
 	if len(adapter.resumes) != 0 {
 		t.Fatalf("adapter should not be called without operator")
+	}
+}
+
+func TestRecruitmentResumeViewRequiresWriter(t *testing.T) {
+	resumeRoot := filepath.Join(t.TempDir(), "qtrecurit", "inbox", "resume-files")
+	resumeDir := filepath.Join(resumeRoot, "resume-key")
+	if err := os.MkdirAll(resumeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resumePath := filepath.Join(resumeDir, "resume.pdf")
+	if err := os.WriteFile(resumePath, []byte("pdfdata"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &fakeRecruitmentAdapter{resumePath: resumePath}
+	ts, _ := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{
+		AllowRealActions: true,
+		ResumeCacheRoot:  resumeRoot,
+	})
+	defer ts.Close()
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		ts.URL+"/api/v1/recruitment/candidates/cand_001/resume/0/view",
+		strings.NewReader(`{}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Operator", "readonly")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected readonly resume access to be rejected, got %d", resp.StatusCode)
+	}
+	if len(adapter.resumes) != 0 {
+		t.Fatalf("adapter should not fetch resume for readonly operator")
 	}
 }
 

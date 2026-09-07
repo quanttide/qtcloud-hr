@@ -14,6 +14,8 @@ const (
 	RecruitmentActionStatusSent            = "sent"
 	RecruitmentActionStatusFailed          = "failed"
 	RecruitmentActionStatusDryRun          = "dry_run"
+	RecruitmentActionStatusViewed          = "viewed"
+	RecruitmentActionStatusDownloaded      = "downloaded"
 	RecruitmentReportStatusCreated         = "created"
 	RecruitmentReportStatusDryRun          = "dry_run"
 	RecruitmentReportStatusFailed          = "failed"

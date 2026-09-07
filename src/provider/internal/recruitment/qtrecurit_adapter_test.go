@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 )
 
 type fakeCommandRunner struct {
+	mu      sync.Mutex
 	stdout  string
 	stderr  string
 	err     error
@@ -32,6 +34,8 @@ func (blockingCommandRunner) Run(ctx context.Context, binary string, args []stri
 }
 
 func (f *fakeCommandRunner) Run(ctx context.Context, binary string, args []string) (string, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.args = args
 	if f.outputs != nil {
 		key := binary + " " + strings.Join(args, " ")

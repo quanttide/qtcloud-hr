@@ -46,6 +46,8 @@ type resumeView struct {
 	Path        string    `json:"path"`
 	FileName    string    `json:"file_name"`
 	ContentType string    `json:"content_type"`
+	Operator    string    `json:"operator"`
+	CandidateID string    `json:"candidate_id"`
 	ExpiresAt   time.Time `json:"expires_at"`
 }
 
@@ -147,6 +149,10 @@ func (h *RecruitmentHandler) CreateReport(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "real recruitment actions are disabled"})
 		return
 	}
+	if !req.IsDryRun(h.dryRunDefault) && !h.providerReady(r.Context()) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "招聘服务环境未就绪，请稍后重试"})
+		return
+	}
 
 	result, err := h.adapter.CreateReport(r.Context(), req)
 	now := time.Now().UTC()
@@ -201,6 +207,10 @@ func (h *RecruitmentHandler) SyncInbox(w http.ResponseWriter, r *http.Request) {
 	req = h.normalizeInboxSyncRequest(req)
 	if !req.IsDryRun(h.dryRunDefault) && !h.allowRealActions {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "real recruitment actions are disabled"})
+		return
+	}
+	if !req.IsDryRun(h.dryRunDefault) && !h.providerReady(r.Context()) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "招聘服务环境未就绪，请稍后重试"})
 		return
 	}
 
@@ -312,6 +322,10 @@ func (h *RecruitmentHandler) RunCandidateAction(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "real recruitment actions are disabled"})
 		return
 	}
+	if !req.IsDryRun(h.dryRunDefault) && !h.providerReady(r.Context()) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "招聘服务环境未就绪，请稍后重试"})
+		return
+	}
 
 	adapterResult, err := h.adapter.RunAction(r.Context(), candidate, req)
 	now := time.Now().UTC()
@@ -348,11 +362,16 @@ func (h *RecruitmentHandler) RunCandidateAction(w http.ResponseWriter, r *http.R
 }
 
 func (h *RecruitmentHandler) CreateResumeView(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.authenticate(w, r, false); !ok {
+	operator, ok := h.authenticate(w, r, true)
+	if !ok {
 		return
 	}
 	if !h.allowRealActions {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "real recruitment actions are disabled"})
+		return
+	}
+	if !h.providerReady(r.Context()) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "招聘服务环境未就绪，请稍后重试"})
 		return
 	}
 	candidate, attachment, ok := h.resumeAttachmentFromRequest(w, r)
@@ -399,6 +418,8 @@ func (h *RecruitmentHandler) CreateResumeView(w http.ResponseWriter, r *http.Req
 		Path:        resolved,
 		FileName:    adapterResult.FileName,
 		ContentType: firstNonEmpty(adapterResult.ContentType, mime.TypeByExtension(filepath.Ext(adapterResult.FileName))),
+		Operator:    operator,
+		CandidateID: candidate.ID,
 		ExpiresAt:   expiresAt,
 	}
 	h.persistResumeViewsLocked()
@@ -447,7 +468,27 @@ func (h *RecruitmentHandler) ServeResumeView(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Content-Disposition", contentDisposition(view.FileName, contentType, r.URL.Query().Get("download") == "1"))
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	action := "view_resume"
+	status := domain.RecruitmentActionStatusViewed
+	if r.URL.Query().Get("download") == "1" {
+		action = "download_resume"
+		status = domain.RecruitmentActionStatusDownloaded
+	}
+	h.logAudit(domain.RecruitmentAuditEntry{
+		ActionID:    newID("resume", now),
+		CandidateID: view.CandidateID,
+		Action:      action,
+		Operator:    view.Operator,
+		Status:      status,
+		Message:     action,
+		CreatedAt:   now,
+	})
 	http.ServeFile(w, r, view.Path)
+}
+
+func (h *RecruitmentHandler) providerReady(ctx context.Context) bool {
+	status := h.adapter.CheckProviderStatus(ctx)
+	return status.Ready && status.Status == "ready"
 }
 
 func (h *RecruitmentHandler) authenticate(w http.ResponseWriter, r *http.Request, requireWrite bool) (string, bool) {
