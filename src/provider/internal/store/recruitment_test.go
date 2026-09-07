@@ -99,6 +99,45 @@ func TestPersistentRecruitmentStoreLoadsCandidatesAcrossInstances(t *testing.T) 
 	}
 }
 
+func TestPersistentRecruitmentStoreKeepsResumeAttachmentSourceIDs(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state", "candidates.json")
+	first, err := NewPersistentRecruitmentStore(statePath)
+	if err != nil {
+		t.Fatalf("create first store: %v", err)
+	}
+	first.ReplaceCandidates([]domain.RecruitmentCandidate{{
+		ID:              "cand_resume",
+		Name:            "简历候选人",
+		Email:           "resume@example.com",
+		Stage:           "new",
+		Status:          "pending",
+		SourceMessageID: "message_001",
+		ResumeAttachments: []domain.RecruitmentResumeAttachment{{
+			FileName:    "resume.pdf",
+			ContentType: "application/pdf",
+			SourceID:    "attachment_001",
+		}},
+	}})
+
+	second, err := NewPersistentRecruitmentStore(statePath)
+	if err != nil {
+		t.Fatalf("create second store: %v", err)
+	}
+	got, ok := second.GetCandidate("cand_resume")
+	if !ok {
+		t.Fatal("persisted resume candidate was not loaded")
+	}
+	if len(got.ResumeAttachments) != 1 {
+		t.Fatalf("resume attachments = %+v, want one attachment", got.ResumeAttachments)
+	}
+	if got.ResumeAttachments[0].SourceID != "attachment_001" {
+		t.Fatalf(
+			"resume attachment source id = %q, want attachment_001",
+			got.ResumeAttachments[0].SourceID,
+		)
+	}
+}
+
 func TestPersistentRecruitmentStoreRefreshesExternalChanges(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state", "candidates.json")
 	first, err := NewPersistentRecruitmentStore(statePath)

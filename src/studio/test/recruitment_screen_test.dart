@@ -276,6 +276,82 @@ void main() {
     expect(find.textContaining('PDF 已在下方内嵌预览'), findsOneWidget);
   });
 
+  testWidgets('Recruitment page downloads a generated resume without opening a window', (
+    tester,
+  ) async {
+    String? downloadedUrl;
+    final client = RecruitmentApiClient(
+      baseUrl: 'https://api.example.test',
+      operator: 'tester',
+      httpClient: MockClient((request) async {
+        if (request.method == 'GET' &&
+            request.url.path == '/api/v1/recruitment/candidates') {
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode([
+                {
+                  'id': 'cand_001',
+                  'name': '张三',
+                  'email': 'zhangsan@example.com',
+                  'subject': '应聘后端开发',
+                  'body': 'HR 您好，我想投递后端开发岗位，附件是我的简历。',
+                  'position': '后端开发',
+                  'stage': 'new',
+                  'status': 'pending',
+                  'has_resume': true,
+                  'has_cover_letter': true,
+                  'resume_attachments': [
+                    {
+                      'file_name': '张三-后端开发简历.pdf',
+                      'content_type': 'application/pdf',
+                    },
+                  ],
+                  'updated_at': '2026-09-04T00:00:00Z',
+                },
+              ]),
+            ),
+            200,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path ==
+                '/api/v1/recruitment/candidates/cand_001/resume/0/view') {
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'url': '/api/v1/recruitment/resume-view/token_001',
+                'expires_at': '2026-09-05T06:00:00Z',
+              }),
+            ),
+            201,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          );
+        }
+        return http.Response('not found', 404);
+      }),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RecruitmentPage(
+          apiClient: client,
+          onDownloadResume: (url, _) => downloadedUrl = url,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(OutlinedButton, '下载'));
+    await tester.pumpAndSettle();
+
+    expect(
+      downloadedUrl,
+      'https://api.example.test/api/v1/recruitment/resume-view/token_001?download=1',
+    );
+    expect(find.textContaining('已开始下载'), findsOneWidget);
+  });
+
   testWidgets(
     'Recruitment page does not auto-open the first resume attachment',
     (tester) async {
