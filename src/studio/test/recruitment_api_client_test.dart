@@ -315,6 +315,7 @@ void main() {
         return jsonResponse({
           'status': 'blocked',
           'ready': false,
+          'operator': 'user-001',
           'mailbox': 'hr@quanttide.com',
           'message': 'provider 环境未就绪',
           'components': [
@@ -339,6 +340,7 @@ void main() {
 
     expect(status.ready, isFalse);
     expect(status.status, 'blocked');
+    expect(status.operator, 'user-001');
     expect(status.mailbox, 'hr@quanttide.com');
     expect(status.components, hasLength(2));
     expect(status.components.first.version, 'qtrecurit 0.1.0');

@@ -579,6 +579,7 @@ void main() {
               jsonEncode({
                 'status': 'blocked',
                 'ready': false,
+                'operator': 'user-001',
                 'mailbox': 'hr@quanttide.com',
                 'message': 'provider 环境未就绪',
                 'components': [
@@ -614,6 +615,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('provider 环境未就绪'), findsWidgets);
+    expect(find.textContaining('当前账号：user-001'), findsOneWidget);
     expect(find.textContaining('HR 邮箱认证态不可用'), findsOneWidget);
     expect(find.textContaining('qtrecurit 0.1.0'), findsOneWidget);
   });

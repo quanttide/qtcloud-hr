@@ -242,6 +242,9 @@ func TestRecruitmentProviderStatusEndpointReturnsSanitizedDiagnostics(t *testing
 	if got.Ready || got.Status != "blocked" || got.Mailbox != "hr@quanttide.com" || len(got.Components) != 2 {
 		t.Fatalf("unexpected provider status: %+v", got)
 	}
+	if got.Operator != "tester" {
+		t.Fatalf("expected authenticated operator in provider status, got %q", got.Operator)
+	}
 	serialized, _ := json.Marshal(got)
 	for _, leak := range []string{"token=", "authorization", "password", "mail body"} {
 		if strings.Contains(strings.ToLower(string(serialized)), leak) {
