@@ -202,6 +202,8 @@ void main() {
     tester,
   ) async {
     var requestedResumeView = false;
+    var requestedResumeBytes = false;
+    String? downloadedUrl;
     final client = RecruitmentApiClient(
       baseUrl: 'https://api.example.test',
       operator: 'tester',
@@ -252,12 +254,29 @@ void main() {
             headers: {'content-type': 'application/json; charset=utf-8'},
           );
         }
+        if (request.method == 'GET' &&
+            request.url.path == '/api/v1/recruitment/resume-view/token_001') {
+          requestedResumeBytes = true;
+          return http.Response.bytes(
+            <int>[37, 80, 68, 70],
+            200,
+            headers: {
+              'content-type': 'application/pdf',
+              'content-disposition': 'attachment; filename="resume.pdf"',
+            },
+          );
+        }
         return http.Response('not found', 404);
       }),
     );
 
     await tester.pumpWidget(
-      MaterialApp(home: RecruitmentPage(apiClient: client)),
+      MaterialApp(
+        home: RecruitmentPage(
+          apiClient: client,
+          onDownloadResume: (url, _) => downloadedUrl = url,
+        ),
+      ),
     );
     await tester.pumpAndSettle();
 
@@ -270,6 +289,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(requestedResumeView, isTrue);
+    expect(requestedResumeBytes, isTrue);
+    expect(downloadedUrl, isNull);
     expect(find.textContaining('已生成简历预览'), findsOneWidget);
     expect(find.text('简历预览'), findsOneWidget);
     expect(find.text('张三-后端开发简历.pdf'), findsNWidgets(2));

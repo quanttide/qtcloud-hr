@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -443,6 +444,18 @@ class RecruitmentApiClient {
       throw const RecruitmentApiException('招聘服务返回为空');
     }
     return RecruitmentResumeView.fromJson(decoded, Uri.parse(baseUrl));
+  }
+
+  Future<Uint8List> fetchResumeBytes(String url) async {
+    final response = await _httpClient.get(
+      Uri.parse(url),
+      headers: _headers(write: false),
+    );
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      return response.bodyBytes;
+    }
+    _decodeResponse(response);
+    throw const RecruitmentApiException('招聘服务暂不可用，请稍后重试');
   }
 
   Uri _uri(String path) {

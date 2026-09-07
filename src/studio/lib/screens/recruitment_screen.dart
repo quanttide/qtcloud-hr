@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -98,6 +99,7 @@ class _ResumePreview {
     required this.fileName,
     required this.contentType,
     required this.url,
+    required this.bytes,
     required this.expiresAt,
   });
 
@@ -105,6 +107,7 @@ class _ResumePreview {
   final String fileName;
   final String contentType;
   final String url;
+  final Uint8List bytes;
   final DateTime? expiresAt;
 }
 
@@ -510,7 +513,9 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     final key = _attachmentKey(email, attachmentIndex);
     setState(() {
       _openingAttachmentKey = key;
-      _resumePreview = null;
+      if (!openDownload) {
+        _resumePreview = null;
+      }
       _lastActionError = null;
       _lastActionMessage = null;
     });
@@ -522,7 +527,14 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
       if (openDownload) {
         final downloadUrl = _downloadUrl(view.url);
         _downloadResumeUrl(downloadUrl, attachment.fileName);
+        if (mounted) {
+          setState(() {
+            _lastActionMessage = '已开始下载：${attachment.fileName}';
+          });
+        }
+        return;
       }
+      final previewBytes = await _apiClient.fetchResumeBytes(view.url);
       if (!mounted) {
         return;
       }
@@ -532,11 +544,10 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
           fileName: attachment.fileName,
           contentType: attachment.contentType,
           url: view.url,
+          bytes: previewBytes,
           expiresAt: view.expiresAt,
         );
-        _lastActionMessage = openDownload
-            ? '已开始下载，并复制临时下载链接：${attachment.fileName}'
-            : '已生成简历预览：${attachment.fileName}';
+        _lastActionMessage = '已生成简历预览：${attachment.fileName}';
       });
     } on RecruitmentApiException catch (error) {
       if (mounted) {
@@ -1337,7 +1348,8 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
                 key: const ValueKey('resume-preview-frame'),
                 height: 640,
                 child: ResumePreviewFrame(
-                  url: preview.url,
+                  bytes: preview.bytes,
+                  contentType: preview.contentType,
                   title: preview.fileName,
                 ),
               ),

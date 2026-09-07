@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -113,6 +114,35 @@ void main() {
       view.url,
       'https://api.example.test/qtcloud-human/api/v1/recruitment/resume-view/token',
     );
+  });
+
+  test('fetches resume bytes without treating the response as JSON', () async {
+    final client = RecruitmentApiClient(
+      baseUrl: 'https://api.example.test/qtcloud-human',
+      accessToken: 'access-token',
+      httpClient: MockClient((request) async {
+        expect(request.method, 'GET');
+        expect(
+          request.url.toString(),
+          'https://api.example.test/qtcloud-human/api/v1/recruitment/resume-view/token',
+        );
+        expect(request.headers['Authorization'], 'Bearer access-token');
+        return http.Response.bytes(
+          Uint8List.fromList(<int>[37, 80, 68, 70]),
+          200,
+          headers: {
+            'content-type': 'application/pdf',
+            'content-disposition': 'attachment; filename="resume.pdf"',
+          },
+        );
+      }),
+    );
+
+    final bytes = await client.fetchResumeBytes(
+      'https://api.example.test/qtcloud-human/api/v1/recruitment/resume-view/token',
+    );
+
+    expect(bytes, orderedEquals(<int>[37, 80, 68, 70]));
   });
 
   test(
