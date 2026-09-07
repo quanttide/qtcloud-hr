@@ -21,6 +21,7 @@ const _operator = String.fromEnvironment(
   defaultValue: 'studio-user',
 );
 const _sessionTokenKey = 'qtcloud-human.access-token';
+const _sessionRefreshTokenKey = 'qtcloud-human.refresh-token';
 
 void main() => runApp(const WorkbenchApp());
 
@@ -60,19 +61,69 @@ class _AuthGateState extends State<AuthGate> {
   @override
   void initState() {
     super.initState();
-    _accessToken =
-        widget.initialAccessToken ?? readSessionValue(_sessionTokenKey);
-    _loading = false;
+    _restoreSession();
   }
 
-  void _onAuthenticated(String token) {
-    writeSessionValue(_sessionTokenKey, token);
-    setState(() => _accessToken = token);
+  Future<void> _restoreSession() async {
+    final initialAccessToken = widget.initialAccessToken;
+    if (initialAccessToken != null && initialAccessToken.isNotEmpty) {
+      if (mounted) {
+        setState(() {
+          _accessToken = initialAccessToken;
+          _loading = false;
+        });
+      }
+      return;
+    }
+
+    final refreshToken = readSessionValue(_sessionRefreshTokenKey);
+    if (refreshToken == null || refreshToken.trim().isEmpty) {
+      _clearSession();
+      return;
+    }
+
+    try {
+      final tokens = await AuthClient(
+        baseUrl: _authBaseUrl,
+      ).refresh(refreshToken: refreshToken);
+      if (!mounted) {
+        return;
+      }
+      _persistSession(tokens);
+      setState(() {
+        _accessToken = tokens.accessToken;
+        _loading = false;
+      });
+    } on AuthClientException {
+      _clearSession();
+    } catch (_) {
+      _clearSession();
+    }
+  }
+
+  void _onAuthenticated(AuthTokens tokens) {
+    _persistSession(tokens);
+    setState(() => _accessToken = tokens.accessToken);
+  }
+
+  void _persistSession(AuthTokens tokens) {
+    writeSessionValue(_sessionTokenKey, tokens.accessToken);
+    writeSessionValue(_sessionRefreshTokenKey, tokens.refreshToken);
+  }
+
+  void _clearSession() {
+    removeSessionValue(_sessionTokenKey);
+    removeSessionValue(_sessionRefreshTokenKey);
+    if (mounted) {
+      setState(() {
+        _accessToken = null;
+        _loading = false;
+      });
+    }
   }
 
   void _logout() {
-    removeSessionValue(_sessionTokenKey);
-    setState(() => _accessToken = null);
+    _clearSession();
   }
 
   @override
@@ -91,7 +142,7 @@ class _AuthGateState extends State<AuthGate> {
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key, required this.onAuthenticated});
 
-  final ValueChanged<String> onAuthenticated;
+  final ValueChanged<AuthTokens> onAuthenticated;
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -122,11 +173,11 @@ class _LoginScreenState extends State<LoginScreen> {
       _error = null;
     });
     try {
-      final token = await AuthClient(
+      final tokens = await AuthClient(
         baseUrl: _authBaseUrl,
       ).login(username: username, password: password);
       if (mounted) {
-        widget.onAuthenticated(token);
+        widget.onAuthenticated(tokens);
       }
     } on AuthClientException catch (error) {
       if (mounted) {

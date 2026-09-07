@@ -11,6 +11,13 @@ class AuthClientException implements Exception {
   String toString() => message;
 }
 
+class AuthTokens {
+  const AuthTokens({required this.accessToken, required this.refreshToken});
+
+  final String accessToken;
+  final String refreshToken;
+}
+
 class AuthClient {
   AuthClient({required this.baseUrl, http.Client? httpClient})
     : _httpClient = httpClient ?? http.Client();
@@ -18,25 +25,33 @@ class AuthClient {
   final String baseUrl;
   final http.Client _httpClient;
 
-  Future<String> login({
+  Future<AuthTokens> login({
     required String username,
     required String password,
   }) async {
+    return _requestToken({
+      'grant_type': 'password',
+      'username': username,
+      'password': password,
+    });
+  }
+
+  Future<AuthTokens> refresh({required String refreshToken}) {
+    return _requestToken({
+      'grant_type': 'refresh_token',
+      'refresh_token': refreshToken,
+    });
+  }
+
+  Future<AuthTokens> _requestToken(Map<String, String> parameters) async {
     final response = await _httpClient.post(
       _uri('/oauth/token'),
       headers: const {
         'Content-Type': 'application/x-www-form-urlencoded',
         'Accept': 'application/json',
       },
-      body: Uri(
-        queryParameters: {
-          'grant_type': 'password',
-          'username': username,
-          'password': password,
-        },
-      ).query,
+      body: Uri(queryParameters: parameters).query,
     );
-
     Object? body;
     try {
       body = response.body.isEmpty ? null : jsonDecode(response.body);
@@ -44,13 +59,17 @@ class AuthClient {
       throw const AuthClientException('认证服务返回无效响应');
     }
     if (response.statusCode >= 200 && response.statusCode < 300) {
-      if (body is Map<String, dynamic> && body['access_token'] is String) {
-        final token = (body['access_token'] as String).trim();
-        if (token.isNotEmpty) {
-          return token;
+      if (body is Map<String, dynamic>) {
+        final accessToken = (body['access_token'] as String?)?.trim() ?? '';
+        final refreshToken = (body['refresh_token'] as String?)?.trim() ?? '';
+        if (accessToken.isNotEmpty && refreshToken.isNotEmpty) {
+          return AuthTokens(
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+          );
         }
       }
-      throw const AuthClientException('认证服务未返回访问令牌');
+      throw const AuthClientException('认证服务未返回完整令牌');
     }
     if (body is Map<String, dynamic>) {
       final description = body['error_description'];

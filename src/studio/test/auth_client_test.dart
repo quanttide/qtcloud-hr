@@ -6,7 +6,7 @@ import 'package:http/testing.dart';
 import 'package:qtcloud_hr_studio/services/auth_client.dart';
 
 void main() {
-  test('password login posts form data and returns access token', () async {
+  test('password login posts form data and returns both tokens', () async {
     final client = AuthClient(
       baseUrl: 'https://api.example.test/qtcloud-auth',
       httpClient: MockClient((request) async {
@@ -21,14 +21,39 @@ void main() {
           'access_token': 'access-token',
           'token_type': 'Bearer',
           'expires_in': 3600,
+          'refresh_token': 'refresh-token',
         });
       }),
     );
 
-    expect(
-      await client.login(username: 'user@example.com', password: 'password'),
-      'access-token',
+    final tokens = await client.login(
+      username: 'user@example.com',
+      password: 'password',
     );
+    expect(tokens.accessToken, 'access-token');
+    expect(tokens.refreshToken, 'refresh-token');
+  });
+
+  test('refresh posts refresh grant and returns rotated tokens', () async {
+    final client = AuthClient(
+      baseUrl: 'https://api.example.test/qtcloud-auth',
+      httpClient: MockClient((request) async {
+        expect(request.url.path, '/qtcloud-auth/oauth/token');
+        expect(request.body, contains('grant_type=refresh_token'));
+        expect(request.body, contains('refresh_token=old-refresh-token'));
+        return jsonResponse({
+          'access_token': 'new-access-token',
+          'token_type': 'Bearer',
+          'expires_in': 3600,
+          'refresh_token': 'new-refresh-token',
+        });
+      }),
+    );
+
+    final token = await client.refresh(refreshToken: 'old-refresh-token');
+
+    expect(token.accessToken, 'new-access-token');
+    expect(token.refreshToken, 'new-refresh-token');
   });
 }
 
