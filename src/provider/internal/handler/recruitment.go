@@ -121,6 +121,7 @@ func (h *RecruitmentHandler) ProviderStatus(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	status := h.adapter.CheckProviderStatus(r.Context())
 	status.Operator = operator
 	writeJSON(w, http.StatusOK, status)

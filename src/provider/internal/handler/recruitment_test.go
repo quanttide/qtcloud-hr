@@ -235,6 +235,9 @@ func TestRecruitmentProviderStatusEndpointReturnsSanitizedDiagnostics(t *testing
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("expected provider status not to be cached, got %q", got)
+	}
 	var got domain.RecruitmentProviderStatus
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decode status response: %v", err)
@@ -250,6 +253,39 @@ func TestRecruitmentProviderStatusEndpointReturnsSanitizedDiagnostics(t *testing
 		if strings.Contains(strings.ToLower(string(serialized)), leak) {
 			t.Fatalf("provider status leaked %q: %s", leak, serialized)
 		}
+	}
+}
+
+func TestRecruitmentProviderStatusUsesAuthenticatedPrincipal(t *testing.T) {
+	adapter := &fakeRecruitmentAdapter{}
+	ts, _ := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{
+		Authenticator: fakeUserInfoAuthorizer{
+			principal: auth.Principal{Subject: "user-001"},
+		},
+	})
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/recruitment/provider/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer authenticated-token")
+	req.Header.Set("X-Operator", "spoofed")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var got domain.RecruitmentProviderStatus
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	if got.Operator != "user-001" {
+		t.Fatalf("expected authenticated principal, got %q", got.Operator)
 	}
 }
 
