@@ -58,6 +58,7 @@ type RecruitmentResumeViewResult struct {
 type RecruitmentProviderStatus struct {
 	Status     string                               `json:"status"`
 	Ready      bool                                 `json:"ready"`
+	Operator   string                               `json:"operator,omitempty"`
 	Mailbox    string                               `json:"mailbox"`
 	Message    string                               `json:"message"`
 	Components []RecruitmentProviderStatusComponent `json:"components"`

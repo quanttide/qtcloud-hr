@@ -283,6 +283,7 @@ class RecruitmentProviderStatus {
   const RecruitmentProviderStatus({
     required this.status,
     required this.ready,
+    required this.operator,
     required this.mailbox,
     required this.message,
     required this.components,
@@ -291,6 +292,7 @@ class RecruitmentProviderStatus {
 
   final String status;
   final bool ready;
+  final String operator;
   final String mailbox;
   final String message;
   final List<RecruitmentProviderStatusComponent> components;
@@ -300,6 +302,7 @@ class RecruitmentProviderStatus {
     return RecruitmentProviderStatus(
       status: (json['status'] as String?) ?? 'unknown',
       ready: (json['ready'] as bool?) ?? false,
+      operator: (json['operator'] as String?) ?? '',
       mailbox: (json['mailbox'] as String?) ?? '',
       message: (json['message'] as String?) ?? '',
       components: ((json['components'] as List<dynamic>?) ?? const [])

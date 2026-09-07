@@ -117,10 +117,13 @@ func (h *RecruitmentHandler) RegisterRoutes(mux *http.ServeMux) {
 }
 
 func (h *RecruitmentHandler) ProviderStatus(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.authenticate(w, r, false); !ok {
+	operator, ok := h.authenticate(w, r, false)
+	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, h.adapter.CheckProviderStatus(r.Context()))
+	status := h.adapter.CheckProviderStatus(r.Context())
+	status.Operator = operator
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (h *RecruitmentHandler) ListCandidates(w http.ResponseWriter, r *http.Request) {

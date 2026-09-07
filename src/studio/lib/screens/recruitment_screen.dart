@@ -769,6 +769,11 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
               'HR 邮箱：${status.mailbox}',
               style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
             ),
+          if (status.operator.isNotEmpty)
+            Text(
+              '当前账号：${status.operator}',
+              style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+            ),
           if (status.message.isNotEmpty)
             Text(
               status.message,
