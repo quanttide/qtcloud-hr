@@ -248,7 +248,7 @@ func (h *RecruitmentHandler) SyncInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !req.IsDryRun(h.dryRunDefault) {
-		h.store.ReplaceCandidates(adapterResult.Candidates)
+		response.Candidates = h.store.ReplaceCandidates(adapterResult.Candidates)
 	}
 	h.logAudit(domain.RecruitmentAuditEntry{
 		ActionID:  response.SyncID,

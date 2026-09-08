@@ -809,7 +809,7 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
         children: [
           _statItem('总邮件', _total.toString(), filter: InboxFilter.all),
           _statItem(
-            '未自动处理',
+            '待处理',
             _unprocessedCount.toString(),
             color: const Color(0xFF991B1B),
             filter: InboxFilter.unprocessed,

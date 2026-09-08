@@ -117,16 +117,21 @@ func (s *RecruitmentStore) UpsertCandidates(candidates []domain.RecruitmentCandi
 	s.persistLocked()
 }
 
-func (s *RecruitmentStore) ReplaceCandidates(candidates []domain.RecruitmentCandidate) {
+func (s *RecruitmentStore) ReplaceCandidates(candidates []domain.RecruitmentCandidate) []domain.RecruitmentCandidate {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.refreshPersistedLocked()
 	next := make(map[string]*domain.RecruitmentCandidate, len(candidates))
 	order := make([]string, 0, len(candidates))
+	merged := make([]domain.RecruitmentCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
 		if candidate.ID == "" {
 			continue
 		}
 		clone := candidate
+		if existing, ok := s.candidates[clone.ID]; ok {
+			clone = preserveWorkflowState(clone, *existing)
+		}
 		if clone.UpdatedAt.IsZero() {
 			clone.UpdatedAt = time.Now().UTC()
 		}
@@ -137,10 +142,28 @@ func (s *RecruitmentStore) ReplaceCandidates(candidates []domain.RecruitmentCand
 			order = append(order, clone.ID)
 		}
 		next[clone.ID] = &clone
+		merged = append(merged, clone)
 	}
 	s.candidates = next
 	s.order = order
 	s.persistLocked()
+	return merged
+}
+
+func preserveWorkflowState(
+	incoming domain.RecruitmentCandidate,
+	existing domain.RecruitmentCandidate,
+) domain.RecruitmentCandidate {
+	if existing.Status == "passed" || existing.Status == "rejected" {
+		incoming.Status = existing.Status
+	}
+	if existing.Stage != "" && existing.Stage != "new" {
+		incoming.Stage = existing.Stage
+	}
+	if existing.LastAction != "" {
+		incoming.LastAction = existing.LastAction
+	}
+	return incoming
 }
 
 func (s *RecruitmentStore) GetCandidate(id string) (domain.RecruitmentCandidate, bool) {
