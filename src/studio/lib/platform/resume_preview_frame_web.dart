@@ -34,6 +34,7 @@ class ResumePreviewFrame extends StatefulWidget {
 
 class _ResumePreviewFrameState extends State<ResumePreviewFrame> {
   String? _objectUrl;
+  int? _viewId;
 
   @override
   void initState() {
@@ -75,11 +76,14 @@ class _ResumePreviewFrameState extends State<ResumePreviewFrame> {
   }
 
   void _setFrameSource() {
-    final element = web.document.getElementById(widget._viewType);
-    if (element != null &&
-        element.isA<web.HTMLIFrameElement>() &&
-        _objectUrl != null) {
-      (element as web.HTMLIFrameElement).src = _objectUrl!;
+    final viewId = _viewId;
+    final objectUrl = _objectUrl;
+    if (viewId == null || objectUrl == null) {
+      return;
+    }
+    final element = ui_web.platformViewRegistry.getViewById(viewId);
+    if (element.isA<web.HTMLIFrameElement>()) {
+      (element as web.HTMLIFrameElement).src = objectUrl;
     }
   }
 
@@ -87,7 +91,10 @@ class _ResumePreviewFrameState extends State<ResumePreviewFrame> {
   Widget build(BuildContext context) {
     return HtmlElementView(
       viewType: widget._viewType,
-      onPlatformViewCreated: (_) => _setFrameSource(),
+      onPlatformViewCreated: (viewId) {
+        _viewId = viewId;
+        _setFrameSource();
+      },
     );
   }
 }
