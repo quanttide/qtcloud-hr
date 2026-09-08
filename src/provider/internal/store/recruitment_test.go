@@ -183,6 +183,47 @@ func TestReplaceCandidatesDropsStaleItems(t *testing.T) {
 	}
 }
 
+func TestReplaceCandidatesPreservesWorkflowStateForExistingCandidates(t *testing.T) {
+	store := NewRecruitmentStore([]domain.RecruitmentCandidate{
+		{
+			ID:         "cand_existing",
+			Name:       "旧姓名",
+			Email:      "old@example.com",
+			Stage:      "survey_sent",
+			Status:     "passed",
+			LastAction: domain.RecruitmentActionSendSurvey,
+		},
+	})
+
+	store.ReplaceCandidates([]domain.RecruitmentCandidate{
+		{
+			ID:      "cand_existing",
+			Name:    "新姓名",
+			Email:   "new@example.com",
+			Subject: "更新后的主题",
+			Stage:   "new",
+			Status:  "pending",
+		},
+	})
+
+	candidate, ok := store.GetCandidate("cand_existing")
+	if !ok {
+		t.Fatal("existing candidate missing after replacement")
+	}
+	if candidate.Name != "新姓名" || candidate.Subject != "更新后的主题" {
+		t.Fatalf("latest source fields were not applied: %+v", candidate)
+	}
+	if candidate.Status != "passed" {
+		t.Fatalf("manual status = %q, want passed", candidate.Status)
+	}
+	if candidate.Stage != "survey_sent" {
+		t.Fatalf("workflow stage = %q, want survey_sent", candidate.Stage)
+	}
+	if candidate.LastAction != domain.RecruitmentActionSendSurvey {
+		t.Fatalf("last action = %q, want %q", candidate.LastAction, domain.RecruitmentActionSendSurvey)
+	}
+}
+
 func TestRecordActionDoesNotMoveLegacyCandidateAheadOfNewerMail(t *testing.T) {
 	store := NewRecruitmentStore([]domain.RecruitmentCandidate{
 		{ID: "cand_old", Name: "旧候选人", Email: "old@example.com", Stage: "new", Status: "pending", UpdatedAt: time.Date(2026, 9, 3, 9, 0, 0, 0, time.UTC)},

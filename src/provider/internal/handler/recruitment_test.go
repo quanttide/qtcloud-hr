@@ -20,13 +20,14 @@ import (
 )
 
 type fakeRecruitmentAdapter struct {
-	reports    []domain.RecruitmentReportRequest
-	actions    []domain.RecruitmentAdapterActionCall
-	inboxSyncs []domain.RecruitmentInboxSyncRequest
-	resumes    []domain.RecruitmentResumeAttachment
-	status     domain.RecruitmentProviderStatus
-	resumePath string
-	err        error
+	reports        []domain.RecruitmentReportRequest
+	actions        []domain.RecruitmentAdapterActionCall
+	inboxSyncs     []domain.RecruitmentInboxSyncRequest
+	syncCandidates []domain.RecruitmentCandidate
+	resumes        []domain.RecruitmentResumeAttachment
+	status         domain.RecruitmentProviderStatus
+	resumePath     string
+	err            error
 }
 
 type fakeUserInfoAuthorizer struct {
@@ -69,13 +70,9 @@ func (f *fakeRecruitmentAdapter) SyncInbox(ctx context.Context, req domain.Recru
 	if f.err != nil {
 		return domain.RecruitmentAdapterInboxSyncResult{}, f.err
 	}
-	return domain.RecruitmentAdapterInboxSyncResult{
-		Status:   "synced",
-		Mailbox:  req.Mailbox,
-		Folder:   req.Folder,
-		Scanned:  3,
-		Imported: 1,
-		Candidates: []domain.RecruitmentCandidate{
+	candidates := f.syncCandidates
+	if candidates == nil {
+		candidates = []domain.RecruitmentCandidate{
 			{
 				ID:             "cand_imported",
 				Name:           "李四",
@@ -95,7 +92,15 @@ func (f *fakeRecruitmentAdapter) SyncInbox(ctx context.Context, req domain.Recru
 					},
 				},
 			},
-		},
+		}
+	}
+	return domain.RecruitmentAdapterInboxSyncResult{
+		Status:     "synced",
+		Mailbox:    req.Mailbox,
+		Folder:     req.Folder,
+		Scanned:    3,
+		Imported:   1,
+		Candidates: candidates,
 	}, nil
 }
 
@@ -711,6 +716,72 @@ func TestRecruitmentInboxSyncCallsAdapterUpsertsCandidatesAndAudits(t *testing.T
 	logText := string(data)
 	if !strings.Contains(logText, "sync_inbox") || strings.Contains(logText, "lisi@example.com") {
 		t.Fatalf("audit log should contain sync metadata only: %s", logText)
+	}
+}
+
+func TestRecruitmentInboxSyncPreservesManualDecision(t *testing.T) {
+	adapter := &fakeRecruitmentAdapter{
+		syncCandidates: []domain.RecruitmentCandidate{{
+			ID:      "cand_001",
+			Name:    "张三",
+			Email:   "zhangsan@example.com",
+			Subject: "更新后的投递主题",
+			Stage:   "new",
+			Status:  "pending",
+		}},
+	}
+	ts, _ := newRecruitmentTestServerWithConfig(t, adapter, RecruitmentHandlerConfig{AllowRealActions: true})
+	defer ts.Close()
+
+	statusReq, err := http.NewRequest(
+		http.MethodPatch,
+		ts.URL+"/api/v1/recruitment/candidates/cand_001",
+		strings.NewReader(`{"status":"passed"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusReq.Header.Set("Content-Type", "application/json")
+	statusReq.Header.Set("X-Operator", "tester")
+	statusReq.Header.Set("X-Recruitment-Permission", "write")
+	statusResp, err := http.DefaultClient.Do(statusReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusResp.Body.Close()
+	if statusResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status update 200, got %d", statusResp.StatusCode)
+	}
+
+	syncResp := postJSON(t, ts.URL+"/api/v1/recruitment/inbox/sync", `{"dry_run":false}`)
+	defer syncResp.Body.Close()
+	if syncResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected sync 200, got %d", syncResp.StatusCode)
+	}
+
+	listReq, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/recruitment/candidates", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listReq.Header.Set("X-Operator", "tester")
+	listResp, err := http.DefaultClient.Do(listReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listResp.Body.Close()
+
+	var candidates []domain.RecruitmentCandidate
+	if err := json.NewDecoder(listResp.Body).Decode(&candidates); err != nil {
+		t.Fatalf("decode candidate list: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected one candidate after sync, got %+v", candidates)
+	}
+	if candidates[0].Status != "passed" {
+		t.Fatalf("manual decision was overwritten by sync: %+v", candidates[0])
+	}
+	if candidates[0].Subject != "更新后的投递主题" {
+		t.Fatalf("sync did not apply latest source fields: %+v", candidates[0])
 	}
 }
 

@@ -593,7 +593,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('未自动处理'), findsOneWidget);
+    expect(find.text('待处理'), findsWidgets);
     expect(find.byKey(const ValueKey('inbox-filter-onlyResume')), findsNothing);
 
     await tester.tap(find.byKey(const ValueKey('inbox-filter-unprocessed')));
