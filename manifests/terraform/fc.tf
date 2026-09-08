@@ -98,6 +98,6 @@ resource "alicloud_fcv3_trigger" "http" {
   qualifier     = "LATEST"
   trigger_config = jsonencode({
     authType = "anonymous"
-    methods  = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"]
+    methods  = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
   })
 }
