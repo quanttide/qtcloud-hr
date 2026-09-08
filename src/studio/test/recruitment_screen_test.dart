@@ -198,6 +198,85 @@ void main() {
     expect(find.text('简历预览'), findsNothing);
   });
 
+  testWidgets('Recruitment page shows only download for Word resumes', (
+    tester,
+  ) async {
+    String? downloadedUrl;
+    final client = RecruitmentApiClient(
+      baseUrl: 'https://api.example.test',
+      operator: 'tester',
+      httpClient: MockClient((request) async {
+        if (request.method == 'GET' &&
+            request.url.path == '/api/v1/recruitment/candidates') {
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode([
+                {
+                  'id': 'cand_docx',
+                  'name': '王五',
+                  'email': 'wangwu@example.com',
+                  'subject': '应聘产品经理',
+                  'body': 'HR 您好，我想投递产品经理岗位。',
+                  'position': '产品经理',
+                  'stage': 'new',
+                  'status': 'pending',
+                  'has_resume': true,
+                  'has_cover_letter': true,
+                  'resume_attachments': [
+                    {
+                      'file_name': '王五-产品经理简历.docx',
+                      'content_type':
+                          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    },
+                  ],
+                  'updated_at': '2026-09-04T00:00:00Z',
+                },
+              ]),
+            ),
+            200,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path ==
+                '/api/v1/recruitment/candidates/cand_docx/resume/0/view') {
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'url': '/api/v1/recruitment/resume-view/docx-token',
+                'expires_at': '2026-09-05T06:00:00Z',
+              }),
+            ),
+            201,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          );
+        }
+        return http.Response('not found', 404);
+      }),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RecruitmentPage(
+          apiClient: client,
+          onDownloadResume: (url, _) => downloadedUrl = url,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(OutlinedButton, '预览'), findsNothing);
+    expect(find.widgetWithText(OutlinedButton, '下载'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(OutlinedButton, '下载'));
+    await tester.pumpAndSettle();
+
+    expect(
+      downloadedUrl,
+      'https://api.example.test/api/v1/recruitment/resume-view/docx-token?download=1',
+    );
+  });
+
   testWidgets('Recruitment page previews resume only after manual request', (
     tester,
   ) async {

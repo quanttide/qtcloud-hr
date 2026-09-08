@@ -1172,6 +1172,7 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
     final key = _attachmentKey(email, attachmentIndex);
     final opening = _openingAttachmentKey == key;
     final previewReady = _resumePreview?.key == key;
+    final isWord = _isWordAttachment(attachment);
     return Padding(
       padding: const EdgeInsets.only(top: 6),
       child: Row(
@@ -1213,28 +1214,31 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
           Wrap(
             spacing: 6,
             children: [
-              OutlinedButton.icon(
-                onPressed: opening
-                    ? null
-                    : () => _previewResumeAttachment(
-                        email,
-                        attachmentIndex,
-                        attachment,
-                      ),
-                icon: opening
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Icon(
-                        previewReady
-                            ? Icons.refresh
-                            : Icons.visibility_outlined,
-                        size: 16,
-                      ),
-                label: Text(opening ? '处理中' : (previewReady ? '重新预览' : '预览')),
-              ),
+              if (!isWord)
+                OutlinedButton.icon(
+                  onPressed: opening
+                      ? null
+                      : () => _previewResumeAttachment(
+                          email,
+                          attachmentIndex,
+                          attachment,
+                        ),
+                  icon: opening
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Icon(
+                          previewReady
+                              ? Icons.refresh
+                              : Icons.visibility_outlined,
+                          size: 16,
+                        ),
+                  label: Text(
+                    opening ? '处理中' : (previewReady ? '重新预览' : '预览'),
+                  ),
+                ),
               OutlinedButton.icon(
                 onPressed: opening
                     ? null
@@ -1251,6 +1255,21 @@ class _RecruitmentPageState extends State<RecruitmentPage> {
         ],
       ),
     );
+  }
+
+  bool _isWordAttachment(RecruitmentResumeAttachment attachment) {
+    final fileName = attachment.fileName.toLowerCase().trim();
+    if (fileName.endsWith('.doc') || fileName.endsWith('.docx')) {
+      return true;
+    }
+    final contentType = attachment.contentType
+        .toLowerCase()
+        .split(';')
+        .first
+        .trim();
+    return contentType == 'application/msword' ||
+        contentType ==
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
   }
 
   IconData _attachmentIcon(RecruitmentResumeAttachment attachment) {
